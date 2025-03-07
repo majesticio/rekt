@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use base64::prelude::*;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat};
+use cpal::SampleFormat;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
@@ -34,6 +34,23 @@ struct AudioDataResponse {
     data: Option<String>,
     mime_type: String,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioConfigResponse {
+    success: bool,
+    device_name: String,
+    available_devices: Vec<AudioDeviceInfo>,
+    current_device: AudioDeviceInfo,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioDeviceInfo {
+    name: String,
+    channels: u16,
+    sample_rate: u32,
+    formats: Vec<String>,
 }
 
 // We'll use a background thread to handle audio recording
@@ -355,6 +372,154 @@ fn is_recording(state: State<'_, Arc<RecordingState>>) -> bool {
     state.is_recording.load(Ordering::SeqCst)
 }
 
+#[tauri::command]
+fn get_audio_devices() -> Result<AudioConfigResponse, String> {
+    let host = cpal::default_host();
+    
+    // Get available input devices
+    let devices = match host.input_devices() {
+        Ok(devices) => devices.collect::<Vec<_>>(),
+        Err(err) => return Err(format!("Failed to get input devices: {}", err)),
+    };
+    
+    let default_device = match host.default_input_device() {
+        Some(device) => device,
+        None => return Err("No default input device available".to_string()),
+    };
+    
+    let default_name = default_device.name().unwrap_or_else(|_| "Unknown Device".to_string());
+    let default_name_clone = default_name.clone();
+    
+    // Get the default config
+    let default_config = match default_device.default_input_config() {
+        Ok(config) => config,
+        Err(err) => return Err(format!("Failed to get default input config: {}", err)),
+    };
+    
+    // Get supported configs
+    let supported_configs = match default_device.supported_input_configs() {
+        Ok(configs) => configs.collect::<Vec<_>>(),
+        Err(err) => return Err(format!("Failed to get supported input configs: {}", err)),
+    };
+    
+    // Get formats from the supported configs
+    let formats = supported_configs
+        .iter()
+        .map(|config| format!("{:?}", config.sample_format()))
+        .collect::<Vec<_>>();
+    
+    // Get device info for each available device
+    let available_devices = devices
+        .iter()
+        .filter_map(|device| {
+            let name = match device.name() {
+                Ok(name) => name,
+                Err(_) => return None,
+            };
+            
+            let config = match device.default_input_config() {
+                Ok(config) => config,
+                Err(_) => return None,
+            };
+            
+            let supported_configs = match device.supported_input_configs() {
+                Ok(configs) => configs.collect::<Vec<_>>(),
+                Err(_) => return None,
+            };
+            
+            let formats = supported_configs
+                .iter()
+                .map(|config| format!("{:?}", config.sample_format()))
+                .collect::<Vec<_>>();
+            
+            Some(AudioDeviceInfo {
+                name: name.clone(),
+                channels: config.channels(),
+                sample_rate: config.sample_rate().0,
+                formats,
+            })
+        })
+        .collect::<Vec<_>>();
+    
+    Ok(AudioConfigResponse {
+        success: true,
+        device_name: default_name,
+        available_devices,
+        current_device: AudioDeviceInfo {
+            name: default_name_clone,
+            channels: default_config.channels(),
+            sample_rate: default_config.sample_rate().0,
+            formats,
+        },
+        error: None,
+    })
+}
+
+#[tauri::command]
+fn set_audio_config(state: State<'_, Arc<RecordingState>>, channels: u16, sample_rate: u32) -> Result<(), String> {
+    if state.is_recording.load(Ordering::SeqCst) {
+        return Err("Cannot change audio configuration while recording".to_string());
+    }
+    
+    // Check if parameters are valid
+    if channels < 1 || channels > 2 {
+        return Err("Invalid number of channels. Must be 1 or 2.".to_string());
+    }
+    
+    let valid_sample_rates = [8000, 16000, 22050, 44100, 48000];
+    if !valid_sample_rates.contains(&sample_rate) {
+        return Err(format!("Invalid sample rate: {}. Must be one of {:?}", sample_rate, valid_sample_rates));
+    }
+    
+    // Set the values
+    *state.channels.lock().unwrap() = channels;
+    *state.sample_rate.lock().unwrap() = sample_rate;
+    
+    println!("Audio config set: {} channels at {} Hz", channels, sample_rate);
+    
+    Ok(())
+}
+
+#[tauri::command]
+fn get_current_audio_config(state: State<'_, Arc<RecordingState>>) -> Result<AudioDeviceInfo, String> {
+    let host = cpal::default_host();
+    
+    let device = match host.default_input_device() {
+        Some(device) => device,
+        None => return Err("No default input device available".to_string()),
+    };
+    
+    let name = device.name().unwrap_or_else(|_| "Unknown Device".to_string());
+    
+    let config = match device.default_input_config() {
+        Ok(config) => config,
+        Err(err) => return Err(format!("Failed to get default input config: {}", err)),
+    };
+    
+    let channels = *state.channels.lock().unwrap();
+    let sample_rate = *state.sample_rate.lock().unwrap();
+    
+    // Use the values from state if available, otherwise use defaults
+    let channels = if channels == 0 { config.channels() } else { channels };
+    let sample_rate = if sample_rate == 0 { config.sample_rate().0 } else { sample_rate };
+    
+    let supported_configs = match device.supported_input_configs() {
+        Ok(configs) => configs.collect::<Vec<_>>(),
+        Err(err) => return Err(format!("Failed to get supported input configs: {}", err)),
+    };
+    
+    let formats = supported_configs
+        .iter()
+        .map(|config| format!("{:?}", config.sample_format()))
+        .collect::<Vec<_>>();
+    
+    Ok(AudioDeviceInfo {
+        name,
+        channels,
+        sample_rate,
+        formats,
+    })
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -368,6 +533,9 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_audio_data,
+            get_audio_devices,
+            get_current_audio_config,
+            set_audio_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
