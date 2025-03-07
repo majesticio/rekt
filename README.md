@@ -176,3 +176,94 @@ npm run tauri build
 ## License
 
 [MIT License](LICENSE)
+
+
+## NEXT STEPS
+How We Got the Voice Recorder App Working
+
+  Key Steps Taken:
+
+  1. Fixed Rust Lifetime Issues:
+    - Changed borrowed references (&self, &RecordingState) to use Arc<RecordingState> for thread-safe reference counting
+    - Made sure data shared between threads was properly ownership-transferred
+  2. Fixed Audio Configuration:
+    - Added storage for audio parameters (channels, sample rate)
+    - Added functions to get and set audio configuration
+    - Made sure audio settings were consistent throughout recording and saving
+  3. Enhanced the UI:
+    - Created a modern interface with light/dark theme
+    - Added configuration options for audio recording
+    - Implemented recording timer and visual feedback
+    - Added device selection and audio parameter controls
+  4. Built and Run the Application:
+    - Built the backend with cargo build --release
+    - Built the frontend with npm run build
+    - Used npm run tauri dev for development
+    - Used the release binary for production
+
+  What Works:
+
+  1. Audio Recording:
+    - Records audio from microphone using CPAL library
+    - Supports different audio formats (i16, u16, f32)
+    - Properly converts between sample formats
+    - Creates WAV files with correct parameters
+  2. Configuration Options:
+    - Channels selection (mono/stereo)
+    - Sample rate selection (8kHz to 48kHz)
+    - Recording mode selection (toggle or hold)
+    - Theme switching (light/dark)
+  3. User Interface Features:
+    - Visual recording feedback with timer
+    - Settings panel with configuration options
+    - Audio playback of recordings
+    - Status messages for user feedback
+
+  What Doesn't Work or Has Issues:
+
+  1. AppImage Building:
+    - The AppImage bundling fails with "failed to run linuxdeploy"
+    - This is a packaging issue specific to Arch Linux
+    - The application still works when running the binary directly
+  2. Permission Handling:
+    - No explicit error handling for microphone permission denial
+    - No platform-specific permission request mechanisms
+    - Could lead to unclear errors if microphone access is denied
+  3. Svelte Deprecation Warnings:
+    - Event handling syntax (on:click etc.) is using deprecated methods
+    - These warnings don't affect functionality but should be updated
+
+  What We're Still Missing:
+
+  1. Advanced Audio Features:
+    - Audio visualization (waveform)
+    - Audio trimming/editing
+    - Multiple recording tracks
+    - Audio effects or processing
+  2. Platform Integration:
+    - Proper installation packages for different Linux distributions
+    - Integration with system audio controls
+    - Notifications for recording status
+  3. User Experience Improvements:
+    - Keyboard shortcuts
+    - Drag and drop interface for recordings
+    - Recording organization/management
+    - Export to different audio formats
+
+  Next Steps to Consider:
+
+  1. Fix the AppImage Building:
+    - Install proper dependencies for linuxdeploy
+    - Configure the build process to use a local linuxdeploy instance
+  2. Improve Error Handling:
+    - Add better detection and messaging for permission issues
+    - Handle audio device disconnection gracefully
+  3. Update Deprecated Svelte Syntax:
+    - Replace on:click with onclick and similar event handlers
+  4. Add Missing Features:
+    - Audio visualization
+    - More export options
+    - Advanced recording management
+
+  Overall, the app is functional for basic voice recording needs, with the release binary working properly. The main remaining issue is with
+  packaging, not core functionality.
