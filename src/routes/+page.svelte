@@ -71,14 +71,26 @@
       isLoading = true;
       statusMessage = "Loading audio configuration...";
       
+      // First get device list
       const config = await invoke('get_audio_devices') as AudioConfigResponse;
       
       if (config.success) {
         audioDevices = config.available_devices;
-        currentDevice = config.current_device;
         selectedDevice = config.device_name;
-        selectedChannels = config.current_device.channels;
-        selectedSampleRate = config.current_device.sample_rate;
+        
+        // Then get current audio settings which may include user customizations
+        try {
+          const currentConfig = await invoke('get_current_audio_config') as AudioDeviceInfo;
+          currentDevice = currentConfig;
+          selectedChannels = currentConfig.channels;
+          selectedSampleRate = currentConfig.sample_rate;
+        } catch (err) {
+          console.error("Error getting current config:", err);
+          // Fallback to device defaults
+          currentDevice = config.current_device;
+          selectedChannels = config.current_device.channels;
+          selectedSampleRate = config.current_device.sample_rate;
+        }
         
         statusMessage = "Ready to record. Press the button to start.";
       } else {
@@ -282,8 +294,15 @@
       sampleRate: selectedSampleRate 
     }).then(() => {
       statusMessage = "Audio settings applied";
-      // Refresh the displayed configuration
-      loadAudioConfig();
+      // Update the current device display but don't reload audio config 
+      // which would reset to device defaults
+      if (currentDevice) {
+        currentDevice = {
+          ...currentDevice,
+          channels: selectedChannels,
+          sample_rate: selectedSampleRate
+        };
+      }
     }).catch(error => {
       console.error("Error applying audio settings:", error);
       statusMessage = `Error: ${error}`;

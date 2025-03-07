@@ -496,12 +496,15 @@ fn get_current_audio_config(state: State<'_, Arc<RecordingState>>) -> Result<Aud
         Err(err) => return Err(format!("Failed to get default input config: {}", err)),
     };
     
+    // Get the current configured values
     let channels = *state.channels.lock().unwrap();
     let sample_rate = *state.sample_rate.lock().unwrap();
     
     // Use the values from state if available, otherwise use defaults
     let channels = if channels == 0 { config.channels() } else { channels };
     let sample_rate = if sample_rate == 0 { config.sample_rate().0 } else { sample_rate };
+    
+    println!("Current audio config: {} channels at {} Hz", channels, sample_rate);
     
     let supported_configs = match device.supported_input_configs() {
         Ok(configs) => configs.collect::<Vec<_>>(),
