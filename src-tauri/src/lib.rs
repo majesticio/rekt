@@ -17,6 +17,8 @@ use tauri::{AppHandle, Manager, State};
 struct RecordingState {
     is_recording: AtomicBool,
     audio_data: Mutex<Vec<i16>>,
+    channels: Mutex<u16>,
+    sample_rate: Mutex<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,6 +94,17 @@ impl BackgroundRecorder {
             
             println!("Using input config: {:?}", config);
             
+            // Store the audio configuration in the state
+            if let Ok(mut channels) = state.channels.lock() {
+                *channels = config.channels();
+            }
+            
+            if let Ok(mut sample_rate) = state.sample_rate.lock() {
+                *sample_rate = config.sample_rate().0;
+            }
+            
+            println!("Recording with {} channels at {} Hz", config.channels(), config.sample_rate().0);
+            
             let err_fn = |err| {
                 println!("An error occurred on the audio stream: {}", err);
             };
@@ -103,6 +116,7 @@ impl BackgroundRecorder {
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         // Add the data to our buffer
                         if let Ok(mut audio_data) = state.audio_data.lock() {
+                            // For I16 format, we can directly use the data
                             audio_data.extend_from_slice(data);
                         }
                     },
@@ -115,7 +129,8 @@ impl BackgroundRecorder {
                         // Convert to i16 and add to our buffer
                         if let Ok(mut audio_data) = state.audio_data.lock() {
                             for &sample in data {
-                                // Convert u16 to i16
+                                // Convert u16 to i16 (offset binary conversion)
+                                // u16 range is 0 to 65535, i16 range is -32768 to 32767
                                 let sample = ((sample as i32) - 32768) as i16;
                                 audio_data.push(sample);
                             }
@@ -130,8 +145,8 @@ impl BackgroundRecorder {
                         // Convert to i16 and add to our buffer
                         if let Ok(mut audio_data) = state.audio_data.lock() {
                             for &sample in data {
-                                // Convert f32 to i16
-                                let sample = (sample * i16::MAX as f32) as i16;
+                                // Properly convert f32 to i16 with clamping
+                                let sample = (sample.max(-1.0).min(1.0) * i16::MAX as f32) as i16;
                                 audio_data.push(sample);
                             }
                         }
@@ -254,19 +269,19 @@ async fn stop_recording(
     let filename = format!("recording_{}.wav", timestamp);
     let filepath = app_dir.join(filename);
 
-    // Get the default audio device's sample rate
-    let host = cpal::default_host();
-    let sample_rate = match host.default_input_device() {
-        Some(device) => match device.default_input_config() {
-            Ok(config) => config.sample_rate().0,
-            Err(_) => 44100, // Fallback to 44.1kHz
-        },
-        None => 44100, // Fallback to 44.1kHz
-    };
+    // Get the saved audio configuration
+    let channels = *state.channels.lock().unwrap();
+    let sample_rate = *state.sample_rate.lock().unwrap();
+    
+    // Use default values if nothing was set
+    let channels = if channels == 0 { 1 } else { channels };
+    let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
+    
+    println!("Creating WAV with {} channels at {} Hz", channels, sample_rate);
 
     // Create a WAV writer
     let spec = hound::WavSpec {
-        channels: 1,
+        channels,
         sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
@@ -280,12 +295,14 @@ async fn stop_recording(
     
     // If there's no audio data, create a dummy silent file
     if audio_data.is_empty() {
-        // Create 1 second of silence (44100 samples)
-        for _ in 0..44100 {
+        println!("No audio data recorded, creating silent file");
+        // Create 1 second of silence (sample_rate * channels samples)
+        for _ in 0..sample_rate * channels as u32 {
             writer.write_sample(0i16)
                 .map_err(|e| format!("Failed to write audio data: {}", e))?;
         }
     } else {
+        println!("Writing {} samples to WAV file", audio_data.len());
         // Write the actual audio data
         for &sample in audio_data.iter() {
             writer.write_sample(sample)
