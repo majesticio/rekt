@@ -683,7 +683,7 @@ async fn play_audio_from_base64(
     };
     
     // Create a temporary file
-    let extension = if mime_type.contains("wav") {
+    let _extension = if mime_type.contains("wav") {
         ".wav"
     } else if mime_type.contains("mp3") {
         ".mp3"
@@ -702,8 +702,8 @@ async fn play_audio_from_base64(
         return Err(format!("Failed to write to temporary file: {}", err));
     }
     
-    // Get the path to the temp file
-    let temp_path = temp_file.path().to_string_lossy().to_string();
+    // Get the path to the temp file (used in the thread)
+    let _temp_path = temp_file.path().to_string_lossy().to_string();
     
     // Clone what we need for the thread
     let playback_id_clone = playback_id.clone();
