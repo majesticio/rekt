@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write, BufReader};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
@@ -10,7 +10,8 @@ use base64::prelude::*;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Emitter};
+use tempfile::NamedTempFile;
 
 // State for the recording system
 #[derive(Default)]
@@ -19,6 +20,13 @@ struct RecordingState {
     audio_data: Mutex<Vec<i16>>,
     channels: Mutex<u16>,
     sample_rate: Mutex<u32>,
+}
+
+// State for audio playback
+#[derive(Default)]
+struct AudioPlaybackState {
+    is_playing: AtomicBool,
+    current_playback_id: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,6 +42,18 @@ struct AudioDataResponse {
     data: Option<String>,
     mime_type: String,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioPlaybackResponse {
+    success: bool,
+    is_playing: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AudioPlaybackEvent {
+    playback_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -373,6 +393,11 @@ fn is_recording(state: State<'_, Arc<RecordingState>>) -> bool {
 }
 
 #[tauri::command]
+fn is_playing(playback_state: State<'_, AudioPlaybackState>) -> bool {
+    playback_state.is_playing.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
 fn get_audio_devices() -> Result<AudioConfigResponse, String> {
     let host = cpal::default_host();
     
@@ -524,11 +549,241 @@ fn get_current_audio_config(state: State<'_, Arc<RecordingState>>) -> Result<Aud
     })
 }
 
+#[tauri::command]
+async fn play_audio(
+    path: String,
+    app_handle: AppHandle,
+    playback_state: State<'_, AudioPlaybackState>,
+) -> Result<AudioPlaybackResponse, String> {
+    // First, stop any currently playing audio
+    stop_audio_internal(&playback_state);
+    
+    // Generate a unique ID for this playback
+    let playback_id = nanoid::nanoid!();
+    *playback_state.current_playback_id.lock().unwrap() = Some(playback_id.clone());
+    
+    // Mark as playing
+    playback_state.is_playing.store(true, Ordering::SeqCst);
+    
+    // Clone the path for the thread
+    let path_clone = path.clone();
+    let playback_id_clone = playback_id.clone();
+    
+    // Spawn a thread to handle audio playback
+    thread::spawn(move || {
+        use rodio::{Decoder, OutputStream, Sink};
+        
+        // Try to open the audio output stream
+        let (_stream, stream_handle) = match OutputStream::try_default() {
+            Ok(result) => result,
+            Err(err) => {
+                println!("Error creating audio output stream: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Try to open the file
+        let file = match File::open(&path_clone) {
+            Ok(file) => file,
+            Err(err) => {
+                println!("Failed to open audio file: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        let buf_reader = BufReader::new(file);
+        
+        // Create a decoder
+        let source = match Decoder::new(buf_reader) {
+            Ok(source) => source,
+            Err(err) => {
+                println!("Failed to decode audio file: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Create a sink
+        let sink = match Sink::try_new(&stream_handle) {
+            Ok(sink) => sink,
+            Err(err) => {
+                println!("Failed to create audio sink: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Add the source to the sink
+        sink.append(source);
+        
+        // Wait for the sink to finish
+        sink.sleep_until_end();
+        
+        // Notify that playback has completed
+        let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+    });
+    
+    Ok(AudioPlaybackResponse {
+        success: true,
+        is_playing: true,
+        error: None,
+    })
+}
+
+#[tauri::command]
+fn stop_audio(playback_state: State<'_, AudioPlaybackState>) -> Result<AudioPlaybackResponse, String> {
+    stop_audio_internal(&playback_state);
+    
+    Ok(AudioPlaybackResponse {
+        success: true,
+        is_playing: false,
+        error: None,
+    })
+}
+
+// Internal helper function to stop audio
+fn stop_audio_internal(playback_state: &AudioPlaybackState) {
+    if playback_state.is_playing.load(Ordering::SeqCst) {
+        // Reset the playback state
+        playback_state.is_playing.store(false, Ordering::SeqCst);
+        *playback_state.current_playback_id.lock().unwrap() = None;
+        
+        // We can't directly stop the audio because it's playing in another thread
+        // The frontend will need to listen for the "audio-playback-stopped" event
+    }
+}
+
+#[tauri::command]
+async fn play_audio_from_base64(
+    base64_data: String,
+    mime_type: String,
+    app_handle: AppHandle,
+    playback_state: State<'_, AudioPlaybackState>,
+) -> Result<AudioPlaybackResponse, String> {
+    // First, stop any currently playing audio
+    stop_audio_internal(&playback_state);
+    
+    // Generate a unique ID for this playback
+    let playback_id = nanoid::nanoid!();
+    *playback_state.current_playback_id.lock().unwrap() = Some(playback_id.clone());
+    
+    // Mark as playing
+    playback_state.is_playing.store(true, Ordering::SeqCst);
+    
+    // Decode base64 data
+    let audio_data = match BASE64_STANDARD.decode(base64_data.as_bytes()) {
+        Ok(data) => data,
+        Err(err) => return Err(format!("Failed to decode base64 data: {}", err)),
+    };
+    
+    // Create a temporary file
+    let extension = if mime_type.contains("wav") {
+        ".wav"
+    } else if mime_type.contains("mp3") {
+        ".mp3"
+    } else {
+        // Default to wav if unknown
+        ".wav"
+    };
+    
+    let mut temp_file = match NamedTempFile::new() {
+        Ok(file) => file,
+        Err(err) => return Err(format!("Failed to create temporary file: {}", err)),
+    };
+    
+    // Write the audio data to the temp file
+    if let Err(err) = temp_file.write_all(&audio_data) {
+        return Err(format!("Failed to write to temporary file: {}", err));
+    }
+    
+    // Get the path to the temp file
+    let temp_path = temp_file.path().to_string_lossy().to_string();
+    
+    // Clone what we need for the thread
+    let playback_id_clone = playback_id.clone();
+    
+    // We need to keep the temp file alive until playback is complete
+    // So we move it into the thread
+    thread::spawn(move || {
+        use rodio::{Decoder, OutputStream, Sink};
+        
+        // Try to open the audio output stream
+        let (_stream, stream_handle) = match OutputStream::try_default() {
+            Ok(result) => result,
+            Err(err) => {
+                println!("Error creating audio output stream: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Try to open the file
+        let file = match File::open(temp_file.path()) {
+            Ok(file) => file,
+            Err(err) => {
+                println!("Failed to open temporary file: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        let buf_reader = BufReader::new(file);
+        
+        // Create a decoder
+        let source = match Decoder::new(buf_reader) {
+            Ok(source) => source,
+            Err(err) => {
+                println!("Failed to decode audio data: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Create a sink
+        let sink = match Sink::try_new(&stream_handle) {
+            Ok(sink) => sink,
+            Err(err) => {
+                println!("Failed to create audio sink: {}", err);
+                // Notify that playback stopped
+                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+                return;
+            }
+        };
+        
+        // Add the source to the sink
+        sink.append(source);
+        
+        // Wait for the sink to finish
+        sink.sleep_until_end();
+        
+        // Notify that playback has completed
+        let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
+        
+        // temp_file will be dropped here and automatically deleted
+    });
+    
+    Ok(AudioPlaybackResponse {
+        success: true,
+        is_playing: true,
+        error: None,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(Arc::new(RecordingState::default()))
         .manage(Mutex::new(BackgroundRecorder::default()))
+        .manage(AudioPlaybackState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -539,6 +794,10 @@ pub fn run() {
             get_audio_devices,
             get_current_audio_config,
             set_audio_config,
+            play_audio,
+            stop_audio,
+            play_audio_from_base64,
+            is_playing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

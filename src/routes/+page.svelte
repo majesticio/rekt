@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
   
@@ -37,8 +38,9 @@
   let isRecordButtonPressed = $state(false);
   let recordingMode = $state<'hold' | 'toggle'>('toggle');
   let theme = $state<'light' | 'dark'>('light');
+  let isPlaying = $state(false);
   
-  // Initialize theme
+  // Initialize theme and listeners
   onMount(() => {
     // Check system preference
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -56,6 +58,18 @@
     
     // Apply theme
     document.documentElement.setAttribute('data-theme', theme);
+    
+    // Listen for audio playback events from the backend
+    const unlisten = listen<{ playback_id: string }>('audio-playback-stopped', (event) => {
+      // This event fires when audio playback is complete
+      isPlaying = false;
+      statusMessage = "Playback complete.";
+    });
+    
+    // Cleanup listener on component unmount
+    return () => {
+      unlisten.then(unlistenFn => unlistenFn());
+    };
   });
   
   // Theme toggle
@@ -195,29 +209,70 @@
   }
 
   async function playRecording() {
-    if (!audioSrc) {
+    if (!audioSrc && !audioPath) {
       statusMessage = "No recording available.";
       return;
     }
     
     try {
       statusMessage = "Playing recording...";
+      isPlaying = true;
       
-      const audio = new Audio(audioSrc);
-      
-      audio.onended = () => {
-        statusMessage = "Playback complete.";
-      };
-      
-      audio.onerror = (e) => {
-        console.error("Audio playback error:", e);
-        statusMessage = "Error playing recording.";
-      };
-      
-      await audio.play();
+      if (audioPath) {
+        // Use native playback with the file path
+        const result = await invoke('play_audio', { path: audioPath });
+        
+        if (!result.success) {
+          isPlaying = false;
+          throw new Error(result.error || "Unknown error playing audio");
+        }
+        
+        // The backend will emit an event when playback is done
+        // which we listen for in the onMount function
+      } else if (audioSrc) {
+        // Extract the base64 data from the data URL
+        const dataMatch = audioSrc.match(/^data:([^;]+);base64,(.+)$/);
+        if (!dataMatch) {
+          isPlaying = false;
+          throw new Error("Invalid audio data URL format");
+        }
+        
+        const mimeType = dataMatch[1];
+        const base64Data = dataMatch[2];
+        
+        // Use native playback with base64 data
+        const result = await invoke('play_audio_from_base64', { 
+          base64_data: base64Data, 
+          mime_type: mimeType 
+        });
+        
+        if (!result.success) {
+          isPlaying = false;
+          throw new Error(result.error || "Unknown error playing audio");
+        }
+        
+        // The backend will emit an event when playback is done
+        // which we listen for in the onMount function
+      }
     } catch (error) {
+      isPlaying = false;
       console.error("Error playing recording:", error);
-      statusMessage = "Error playing recording.";
+      statusMessage = `Error playing recording: ${error}`;
+    }
+  }
+  
+  async function stopPlayback() {
+    try {
+      const result = await invoke('stop_audio');
+      if (!result.success) {
+        console.error("Error stopping playback:", result.error);
+      }
+      isPlaying = false;
+      statusMessage = "Playback stopped.";
+    } catch (error) {
+      isPlaying = false;
+      console.error("Error stopping playback:", error);
+      statusMessage = `Error stopping playback: ${error}`;
     }
   }
 
@@ -264,7 +319,11 @@
 
   function handlePlayClick() {
     if (!isLoading) {
-      playRecording();
+      if (isPlaying) {
+        stopPlayback();
+      } else {
+        playRecording();
+      }
     }
   }
   
@@ -468,18 +527,26 @@
         </div>
       </button>
       
-      {#if audioSrc}
+      {#if audioSrc || audioPath}
         <button 
           class="play-button" 
+          class:playing={isPlaying}
           on:click={handlePlayClick}
           disabled={isLoading}
-          aria-label="Play Recording"
+          aria-label={isPlaying ? "Stop Playback" : "Play Recording"}
         >
           <div class="button-content">
-            <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-            <span>Play</span>
+            {#if isPlaying}
+              <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M6 6h4v12H6zm8 0h4v12h-4z"/>
+              </svg>
+              <span>Stop</span>
+            {:else}
+              <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              <span>Play</span>
+            {/if}
           </div>
         </button>
       {/if}
@@ -808,6 +875,14 @@
 
   .play-button:active {
     transform: scale(0.98);
+  }
+  
+  .play-button.playing {
+    background-color: var(--secondary-text-color);
+  }
+  
+  .play-button.playing:hover {
+    background-color: var(--text-color);
   }
 
   .audio-player-container {
