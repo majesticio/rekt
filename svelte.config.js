@@ -6,14 +6,18 @@ import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-  preprocess: vitePreprocess({
-    postcss: false, // Disable PostCSS for scripts and markup
-    style: {
-      postcss: {
-        configFilePath: false // Disable PostCSS config file lookup
-      }
+  // Custom preprocess options for handling PostCSS issues
+  preprocess: {
+    markup: ({ content }) => {
+      return { code: content };
+    },
+    style: ({ content }) => {
+      return { code: content };
+    },
+    script: ({ content }) => {
+      return { code: content };
     }
-  }),
+  },
   kit: {
     adapter: adapter(),
   },

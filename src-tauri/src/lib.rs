@@ -13,20 +13,65 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, State, Emitter};
 use tempfile::NamedTempFile;
 
+// Define a type to hold our audio input stream
+struct AudioInputStream {
+    #[allow(dead_code)]  // The stream is kept alive but not directly used
+    stream: Box<dyn StreamTrait>,
+}
+
+unsafe impl Send for AudioInputStream {}
+unsafe impl Sync for AudioInputStream {}
+
+// Define a type to hold our audio output stream
+struct AudioOutputStream {
+    #[allow(dead_code)]  // The stream is kept alive but not directly used
+    stream: rodio::OutputStream,
+    handle: rodio::OutputStreamHandle,
+}
+
+unsafe impl Send for AudioOutputStream {}
+unsafe impl Sync for AudioOutputStream {}
+
 // State for the recording system
-#[derive(Default)]
 struct RecordingState {
     is_recording: AtomicBool,
     audio_data: Mutex<Vec<i16>>,
     channels: Mutex<u16>,
     sample_rate: Mutex<u32>,
+    input_stream: Mutex<Option<AudioInputStream>>,
+    device_initialized: AtomicBool,
+}
+
+impl Default for RecordingState {
+    fn default() -> Self {
+        Self {
+            is_recording: AtomicBool::new(false),
+            audio_data: Mutex::new(Vec::new()),
+            channels: Mutex::new(1),
+            sample_rate: Mutex::new(44100),
+            input_stream: Mutex::new(None),
+            device_initialized: AtomicBool::new(false),
+        }
+    }
 }
 
 // State for audio playback
-#[derive(Default)]
 struct AudioPlaybackState {
     is_playing: AtomicBool,
     current_playback_id: Mutex<Option<String>>,
+    output_stream: Mutex<Option<AudioOutputStream>>,
+    device_initialized: AtomicBool,
+}
+
+impl Default for AudioPlaybackState {
+    fn default() -> Self {
+        Self {
+            is_playing: AtomicBool::new(false),
+            current_playback_id: Mutex::new(None),
+            output_stream: Mutex::new(None),
+            device_initialized: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -102,122 +147,165 @@ impl BackgroundRecorder {
         let stop_flag = self.stop_flag.clone();
         let state = state.clone();
         
+        // Check if we need to initialize the input stream
+        let needs_init = !state.device_initialized.load(Ordering::SeqCst);
+        println!("Starting recording - Device initialized: {}", !needs_init);
+        
+        // Create separate Arc clone for the thread
+        let thread_state = Arc::clone(&state);
+        
         // Create the recording thread
         let handle = thread::spawn(move || {
             println!("Recording thread started");
             
-            // Set up the audio host
-            let host = cpal::default_host();
-            
-            // Get the default input device
-            let device = match host.default_input_device() {
-                Some(device) => device,
-                None => {
-                    println!("Error: No input device available");
-                    return;
-                }
-            };
-            
-            println!("Using input device: {}", device.name().unwrap_or_else(|_| "unknown".to_string()));
-            
-            // Get the default config for the device
-            let config = match device.default_input_config() {
-                Ok(config) => config,
-                Err(err) => {
-                    println!("Error getting default input config: {}", err);
-                    return;
-                }
-            };
-            
-            println!("Using input config: {:?}", config);
-            
-            // Store the audio configuration in the state
-            if let Ok(mut channels) = state.channels.lock() {
-                *channels = config.channels();
+            // Clear the audio buffer before starting a new recording
+            if let Ok(mut audio_data) = thread_state.audio_data.lock() {
+                audio_data.clear();
             }
             
-            if let Ok(mut sample_rate) = state.sample_rate.lock() {
-                *sample_rate = config.sample_rate().0;
-            }
-            
-            println!("Recording with {} channels at {} Hz", config.channels(), config.sample_rate().0);
-            
-            let err_fn = |err| {
-                println!("An error occurred on the audio stream: {}", err);
-            };
-            
-            // Create the stream
-            let stream = match config.sample_format() {
-                SampleFormat::I16 => device.build_input_stream(
-                    &config.into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        // Add the data to our buffer
-                        if let Ok(mut audio_data) = state.audio_data.lock() {
-                            // For I16 format, we can directly use the data
-                            audio_data.extend_from_slice(data);
-                        }
-                    },
-                    err_fn,
-                    None,
-                ),
-                SampleFormat::U16 => device.build_input_stream(
-                    &config.into(),
-                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        // Convert to i16 and add to our buffer
-                        if let Ok(mut audio_data) = state.audio_data.lock() {
-                            for &sample in data {
-                                // Convert u16 to i16 (offset binary conversion)
-                                // u16 range is 0 to 65535, i16 range is -32768 to 32767
-                                let sample = ((sample as i32) - 32768) as i16;
-                                audio_data.push(sample);
+            // Only initialize the stream if needed
+            if needs_init {
+                // Set up the audio host
+                let host = cpal::default_host();
+                
+                // Get the default input device
+                let device = match host.default_input_device() {
+                    Some(device) => device,
+                    None => {
+                        println!("Error: No input device available");
+                        return;
+                    }
+                };
+                
+                println!("Using input device: {}", device.name().unwrap_or_else(|_| "unknown".to_string()));
+                
+                // Get the default config for the device
+                let config = match device.default_input_config() {
+                    Ok(config) => config,
+                    Err(err) => {
+                        println!("Error getting default input config: {}", err);
+                        return;
+                    }
+                };
+                
+                println!("Using input config: {:?}", config);
+                
+                // Store the audio configuration in the state
+                if let Ok(mut channels) = thread_state.channels.lock() {
+                    *channels = config.channels();
+                }
+                
+                if let Ok(mut sample_rate) = thread_state.sample_rate.lock() {
+                    *sample_rate = config.sample_rate().0;
+                }
+                
+                println!("Recording with {} channels at {} Hz", config.channels(), config.sample_rate().0);
+                
+                let err_fn = |err| {
+                    println!("An error occurred on the audio stream: {}", err);
+                };
+                
+                // Clone state for each callback function
+                let i16_state = Arc::clone(&thread_state);
+                let u16_state = Arc::clone(&thread_state);
+                let f32_state = Arc::clone(&thread_state);
+                
+                // Create the stream
+                let stream = match config.sample_format() {
+                    SampleFormat::I16 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            // Only collect data if we're actually recording
+                            if i16_state.is_recording.load(Ordering::SeqCst) {
+                                // Add the data to our buffer
+                                if let Ok(mut audio_data) = i16_state.audio_data.lock() {
+                                    // For I16 format, we can directly use the data
+                                    audio_data.extend_from_slice(data);
+                                }
                             }
-                        }
-                    },
-                    err_fn,
-                    None,
-                ),
-                SampleFormat::F32 => device.build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        // Convert to i16 and add to our buffer
-                        if let Ok(mut audio_data) = state.audio_data.lock() {
-                            for &sample in data {
-                                // Properly convert f32 to i16 with clamping
-                                let sample = (sample.max(-1.0).min(1.0) * i16::MAX as f32) as i16;
-                                audio_data.push(sample);
+                        },
+                        err_fn,
+                        None,
+                    ),
+                    SampleFormat::U16 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                            // Only collect data if we're actually recording
+                            if u16_state.is_recording.load(Ordering::SeqCst) {
+                                // Convert to i16 and add to our buffer
+                                if let Ok(mut audio_data) = u16_state.audio_data.lock() {
+                                    for &sample in data {
+                                        // Convert u16 to i16 (offset binary conversion)
+                                        // u16 range is 0 to 65535, i16 range is -32768 to 32767
+                                        let sample = ((sample as i32) - 32768) as i16;
+                                        audio_data.push(sample);
+                                    }
+                                }
                             }
-                        }
-                    },
-                    err_fn,
-                    None,
-                ),
-                _ => {
-                    println!("Unsupported sample format");
+                        },
+                        err_fn,
+                        None,
+                    ),
+                    SampleFormat::F32 => device.build_input_stream(
+                        &config.into(),
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            // Only collect data if we're actually recording
+                            if f32_state.is_recording.load(Ordering::SeqCst) {
+                                // Convert to i16 and add to our buffer
+                                if let Ok(mut audio_data) = f32_state.audio_data.lock() {
+                                    for &sample in data {
+                                        // Properly convert f32 to i16 with clamping
+                                        let sample = (sample.max(-1.0).min(1.0) * i16::MAX as f32) as i16;
+                                        audio_data.push(sample);
+                                    }
+                                }
+                            }
+                        },
+                        err_fn,
+                        None,
+                    ),
+                    _ => {
+                        println!("Unsupported sample format");
+                        return;
+                    }
+                };
+                
+                let stream = match stream {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        println!("Error building input stream: {}", err);
+                        return;
+                    }
+                };
+                
+                // Start the stream
+                if let Err(err) = stream.play() {
+                    println!("Error starting audio stream: {}", err);
                     return;
                 }
-            };
-            
-            let stream = match stream {
-                Ok(stream) => stream,
-                Err(err) => {
-                    println!("Error building input stream: {}", err);
-                    return;
+                
+                // Store the stream in the state - no need for another clone, use thread_state
+                {   // Use block to limit the lifetime of the mutex guard
+                    let mut input_stream = thread_state.input_stream.lock().unwrap();
+                    *input_stream = Some(AudioInputStream {
+                        stream: Box::new(stream),
+                    });
                 }
-            };
-            
-            // Start recording
-            if let Err(err) = stream.play() {
-                println!("Error starting audio stream: {}", err);
-                return;
+                
+                // Mark device as initialized
+                thread_state.device_initialized.store(true, Ordering::SeqCst);
             }
             
-            // Keep recording until the stop flag is set
+            // Set recording state to true
+            thread_state.is_recording.store(true, Ordering::SeqCst);
+            
+            // Keep the thread alive until the stop flag is set
             while !(*stop_flag).load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(100));
             }
             
-            // Stop the stream when done
-            drop(stream);
+            // Set recording state to false
+            thread_state.is_recording.store(false, Ordering::SeqCst);
             
             println!("Recording thread stopped");
         });
@@ -234,7 +322,10 @@ impl BackgroundRecorder {
         // Wait for the thread to finish
         if let Some(handle) = self.join_handle.take() {
             match handle.join() {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    // Note: We no longer drop the stream here, it's kept persistent in the state
+                    Ok(())
+                },
                 Err(_) => Err("Failed to join recording thread".to_string()),
             }
         } else {
@@ -569,20 +660,63 @@ async fn play_audio(
     let path_clone = path.clone();
     let playback_id_clone = playback_id.clone();
     
-    // Spawn a thread to handle audio playback
-    thread::spawn(move || {
-        use rodio::{Decoder, OutputStream, Sink};
-        
+    // Check if we need to initialize the output stream
+    let mut needs_init = !playback_state.device_initialized.load(Ordering::SeqCst);
+    let mut stream_handle_option = None;
+    
+    println!("Starting playback - Output device initialized: {}", !needs_init);
+    
+    // Try to get existing output stream
+    if !needs_init {
+        if let Ok(output_stream) = playback_state.output_stream.lock() {
+            if let Some(output) = output_stream.as_ref() {
+                stream_handle_option = Some(output.handle.clone());
+            } else {
+                needs_init = true;
+            }
+        } else {
+            needs_init = true;
+        }
+    }
+    
+    // Initialize output stream if needed
+    if needs_init {
+        use rodio::OutputStream;
         // Try to open the audio output stream
-        let (_stream, stream_handle) = match OutputStream::try_default() {
-            Ok(result) => result,
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                // Store the stream in the state for reuse
+                if let Ok(mut output_stream) = playback_state.output_stream.lock() {
+                    *output_stream = Some(AudioOutputStream {
+                        stream,
+                        handle: handle.clone(),
+                    });
+                    
+                    // Mark device as initialized
+                    playback_state.device_initialized.store(true, Ordering::SeqCst);
+                    stream_handle_option = Some(handle);
+                }
+            },
             Err(err) => {
                 println!("Error creating audio output stream: {}", err);
-                // Notify that playback stopped
-                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-                return;
+                playback_state.is_playing.store(false, Ordering::SeqCst);
+                return Err(format!("Failed to create audio output stream: {}", err));
             }
-        };
+        }
+    }
+    
+    // Get the stream handle
+    let stream_handle = match stream_handle_option {
+        Some(handle) => handle,
+        None => {
+            playback_state.is_playing.store(false, Ordering::SeqCst);
+            return Err("Failed to get audio output stream handle".to_string());
+        }
+    };
+    
+    // Spawn a thread to handle audio playback
+    thread::spawn(move || {
+        use rodio::{Decoder, Sink};
         
         // Try to open the file
         let file = match File::open(&path_clone) {
@@ -708,21 +842,62 @@ async fn play_audio_from_base64(
     // Clone what we need for the thread
     let playback_id_clone = playback_id.clone();
     
+    // Check if we need to initialize the output stream
+    let mut needs_init = !playback_state.device_initialized.load(Ordering::SeqCst);
+    let mut stream_handle_option = None;
+    
+    // Try to get existing output stream
+    if !needs_init {
+        if let Ok(output_stream) = playback_state.output_stream.lock() {
+            if let Some(output) = output_stream.as_ref() {
+                stream_handle_option = Some(output.handle.clone());
+            } else {
+                needs_init = true;
+            }
+        } else {
+            needs_init = true;
+        }
+    }
+    
+    // Initialize output stream if needed
+    if needs_init {
+        use rodio::OutputStream;
+        // Try to open the audio output stream
+        match OutputStream::try_default() {
+            Ok((stream, handle)) => {
+                // Store the stream in the state for reuse
+                if let Ok(mut output_stream) = playback_state.output_stream.lock() {
+                    *output_stream = Some(AudioOutputStream {
+                        stream,
+                        handle: handle.clone(),
+                    });
+                    
+                    // Mark device as initialized
+                    playback_state.device_initialized.store(true, Ordering::SeqCst);
+                    stream_handle_option = Some(handle);
+                }
+            },
+            Err(err) => {
+                println!("Error creating audio output stream: {}", err);
+                playback_state.is_playing.store(false, Ordering::SeqCst);
+                return Err(format!("Failed to create audio output stream: {}", err));
+            }
+        }
+    }
+    
+    // Get the stream handle
+    let stream_handle = match stream_handle_option {
+        Some(handle) => handle,
+        None => {
+            playback_state.is_playing.store(false, Ordering::SeqCst);
+            return Err("Failed to get audio output stream handle".to_string());
+        }
+    };
+    
     // We need to keep the temp file alive until playback is complete
     // So we move it into the thread
     thread::spawn(move || {
-        use rodio::{Decoder, OutputStream, Sink};
-        
-        // Try to open the audio output stream
-        let (_stream, stream_handle) = match OutputStream::try_default() {
-            Ok(result) => result,
-            Err(err) => {
-                println!("Error creating audio output stream: {}", err);
-                // Notify that playback stopped
-                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-                return;
-            }
-        };
+        use rodio::{Decoder, Sink};
         
         // Try to open the file
         let file = match File::open(temp_file.path()) {
@@ -780,6 +955,7 @@ async fn play_audio_from_base64(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    println!("Initializing audio processing with persistent device connections");
     tauri::Builder::default()
         .manage(Arc::new(RecordingState::default()))
         .manage(Mutex::new(BackgroundRecorder::default()))
