@@ -11,20 +11,21 @@ export default defineConfig(async () => ({
     {
       name: 'skip-postcss-svelte',
       transform(code, id) {
-        if (id.includes('.svelte') && id.includes('type=style')) {
-          // Skip CSS transforms for Svelte style tags
+        // Skip all CSS processing for Svelte files to avoid errors
+        if (id.includes('.svelte') && (id.includes('type=style') || id.includes('&type=style'))) {
           return { code };
         }
-      }
+      },
+      // Higher priority to ensure it runs before other plugins
+      enforce: 'pre'
     },
     // Regular SvelteKit plugin
     sveltekit(),
   ],
 
-  // Disable built-in CSS processing to avoid PostCSS errors
-  css: { 
-    transformer: 'postcss',
-    postcss: { plugins: [] } 
+  // Completely disable CSS processing for this project
+  css: {
+    postcss: false
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
