@@ -7,14 +7,24 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    sveltekit(),
+    // Apply sveltekit with modified config for CSS
+    sveltekit({
+      preprocess: {
+        style: ({ content }) => {
+          return { code: content };
+        }
+      },
+      compilerOptions: {
+        // Disable CSS processing at the compiler level
+        css: false
+      }
+    }),
   ],
 
-  // Disable CSS processing through PostCSS for Svelte files
+  // Disable PostCSS globally
   css: {
-    postcss: {
-      plugins: [] // Minimal PostCSS configuration to avoid errors
-    }
+    // Set to false to disable PostCSS
+    postcss: false,
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

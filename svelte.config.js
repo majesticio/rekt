@@ -2,22 +2,24 @@
 // so we will use adapter-static to prerender the app (SSG)
 // See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import adapter from "@sveltejs/adapter-static";
-import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
+
+// Create a custom preprocessor that skips CSS processing
+const noPostCssPreprocessor = {
+  name: 'no-postcss',
+  markup: ({ content }) => {
+    return { code: content };
+  },
+  style: ({ content }) => {
+    return { code: content };
+  },
+  script: ({ content }) => {
+    return { code: content };
+  }
+};
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
-  // Custom preprocess options for handling PostCSS issues
-  preprocess: {
-    markup: ({ content }) => {
-      return { code: content };
-    },
-    style: ({ content }) => {
-      return { code: content };
-    },
-    script: ({ content }) => {
-      return { code: content };
-    }
-  },
+  preprocess: noPostCssPreprocessor,
   kit: {
     adapter: adapter(),
   },
