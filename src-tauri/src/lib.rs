@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Write, BufReader};
-use std::path::PathBuf;
+// use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -714,7 +714,7 @@ async fn play_audio_from_base64(
         .map_err(|e| format!("Failed to decode base64: {}", e))?;
 
     // We create a temporary file
-    let extension = if mime_type.contains("wav") {
+    let _extension = if mime_type.contains("wav") {
         ".wav"
     } else if mime_type.contains("mp3") {
         ".mp3"
