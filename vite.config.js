@@ -7,24 +7,24 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   plugins: [
-    // Apply sveltekit with modified config for CSS
-    sveltekit({
-      preprocess: {
-        style: ({ content }) => {
-          return { code: content };
+    // Custom plugin to bypass PostCSS errors
+    {
+      name: 'skip-postcss-svelte',
+      transform(code, id) {
+        if (id.includes('.svelte') && id.includes('type=style')) {
+          // Skip CSS transforms for Svelte style tags
+          return { code };
         }
-      },
-      compilerOptions: {
-        // Disable CSS processing at the compiler level
-        css: false
       }
-    }),
+    },
+    // Regular SvelteKit plugin
+    sveltekit(),
   ],
 
-  // Disable PostCSS globally
-  css: {
-    // Set to false to disable PostCSS
-    postcss: false,
+  // Disable built-in CSS processing to avoid PostCSS errors
+  css: { 
+    transformer: 'postcss',
+    postcss: { plugins: [] } 
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
