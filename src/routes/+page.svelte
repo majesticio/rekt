@@ -1,9 +1,24 @@
 <!-- Svelte component -->
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
-  import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
+  
+  // Import our extracted functionality
+  import { 
+    type AudioDeviceInfo, 
+    formatTime, 
+    loadAudioConfig, 
+    applyAudioSettings as applySettings,
+    startRecording as startRec,
+    stopRecording as stopRec
+  } from '$lib/recording';
+  
+  import {
+    playAudioFromPath,
+    playAudioFromBase64,
+    stopPlayback as stopAudio,
+    setupPlaybackListener
+  } from '$lib/playback';
   
   // Recording state
   let isRecording = $state(false);
@@ -14,22 +29,7 @@
   let recordingTime = $state(0);
   let recordingTimer: number;
   
-  // Audio configuration 
-  type AudioDeviceInfo = {
-    name: string;
-    channels: number;
-    sample_rate: number;
-    formats: string[];
-  };
-  
-  type AudioConfigResponse = {
-    success: boolean;
-    device_name: string;
-    available_devices: AudioDeviceInfo[];
-    current_device: AudioDeviceInfo;
-    error?: string;
-  };
-  
+  // Audio configuration
   let audioDevices = $state<AudioDeviceInfo[]>([]);
   let currentDevice = $state<AudioDeviceInfo | null>(null);
   let selectedDevice = $state<string>("");
@@ -49,7 +49,7 @@
     }
     
     // Load audio config
-    loadAudioConfig();
+    loadAudioConfiguration();
     
     // Check for saved theme preference
     const savedTheme = localStorage.getItem('theme');
@@ -61,15 +61,14 @@
     document.documentElement.setAttribute('data-theme', theme);
     
     // Listen for audio playback events from the backend
-    const unlisten = listen<{ playback_id: string }>('audio-playback-stopped', (event) => {
-      // This event fires when audio playback is complete
+    const unlistenPromise = setupPlaybackListener(() => {
       isPlaying = false;
       statusMessage = "Playback complete.";
     });
     
     // Cleanup listener on component unmount
     return () => {
-      unlisten.then(unlistenFn => unlistenFn());
+      unlistenPromise.then(unlistenFn => unlistenFn());
     };
   });
   
@@ -81,36 +80,19 @@
   }
   
   // Load audio configuration
-  async function loadAudioConfig() {
+  async function loadAudioConfiguration() {
     try {
       isLoading = true;
       statusMessage = "Loading audio configuration...";
       
-      // First get device list
-      const config = await invoke('get_audio_devices') as AudioConfigResponse;
+      const config = await loadAudioConfig();
+      audioDevices = config.audioDevices;
+      selectedDevice = config.selectedDevice;
+      currentDevice = config.currentDevice;
+      selectedChannels = config.selectedChannels;
+      selectedSampleRate = config.selectedSampleRate;
       
-      if (config.success) {
-        audioDevices = config.available_devices;
-        selectedDevice = config.device_name;
-        
-        // Then get current audio settings which may include user customizations
-        try {
-          const currentConfig = await invoke('get_current_audio_config') as AudioDeviceInfo;
-          currentDevice = currentConfig;
-          selectedChannels = currentConfig.channels;
-          selectedSampleRate = currentConfig.sample_rate;
-        } catch (err) {
-          console.error("Error getting current config:", err);
-          // Fallback to device defaults
-          currentDevice = config.current_device;
-          selectedChannels = config.current_device.channels;
-          selectedSampleRate = config.current_device.sample_rate;
-        }
-        
-        statusMessage = "Ready to record. Press the button to start.";
-      } else {
-        statusMessage = `Error: ${config.error || 'Failed to load audio config'}`;
-      }
+      statusMessage = "Ready to record. Press the button to start.";
     } catch (error) {
       console.error("Error loading audio config:", error);
       statusMessage = `Error loading audio configuration: ${error}`;
@@ -124,23 +106,9 @@
     try {
       isLoading = true;
       
-      // Apply selected audio configuration before recording
-      try {
-        await invoke('set_audio_config', { 
-          channels: selectedChannels, 
-          sampleRate: selectedSampleRate 
-        });
-      } catch (configError) {
-        console.error("Error setting audio config:", configError);
-        statusMessage = `Error setting audio config: ${configError}`;
-        isLoading = false;
-        return;
-      }
-      
-      await invoke('start_recording');
+      await startRec(selectedChannels, selectedSampleRate);
       isRecording = true;
       statusMessage = "Recording...";
-      isLoading = false;
       
       // Start recording timer
       recordingTime = 0;
@@ -150,6 +118,7 @@
     } catch (error) {
       console.error("Error starting recording:", error);
       statusMessage = `Error starting recording: ${error}`;
+    } finally {
       isLoading = false;
     }
   }
@@ -165,46 +134,17 @@
         clearInterval(recordingTimer);
       }
       
-      const result = await invoke('stop_recording') as { 
-        success: boolean, 
-        path: string, 
-        error?: string 
-      };
+      const result = await stopRec();
       
       isRecording = false;
-      
-      if (result.success && result.path) {
-        audioPath = result.path;
-        statusMessage = `Recording saved (${formatTime(recordingTime)}). Ready to play.`;
-        
-        // Get audio data as base64
-        try {
-          const audioData = await invoke('get_audio_data', { path: result.path }) as {
-            success: boolean,
-            data?: string,
-            mime_type: string,
-            error?: string
-          };
-          
-          if (audioData.success && audioData.data) {
-            // Create data URL
-            audioSrc = `data:${audioData.mime_type};base64,${audioData.data}`;
-          } else {
-            console.error("Failed to load audio data:", audioData.error);
-            statusMessage = `Error loading audio: ${audioData.error}`;
-          }
-        } catch (err) {
-          console.error("Error getting audio data:", err);
-          statusMessage = `Error getting audio data: ${err}`;
-        }
-      } else {
-        statusMessage = `Error: ${result.error || 'Unknown error'}`;
-      }
-      isLoading = false;
+      audioPath = result.audioPath;
+      audioSrc = result.audioSrc;
+      statusMessage = `Recording saved (${formatTime(recordingTime)}). Ready to play.`;
     } catch (error) {
       console.error("Error stopping recording:", error);
       statusMessage = `Error stopping recording: ${error}`;
       isRecording = false;
+    } finally {
       isLoading = false;
     }
   }
@@ -220,40 +160,9 @@
       isPlaying = true;
       
       if (audioPath) {
-        // Use native playback with the file path
-        const result = await invoke('play_audio', { path: audioPath });
-        
-        if (!result.success) {
-          isPlaying = false;
-          throw new Error(result.error || "Unknown error playing audio");
-        }
-        
-        // The backend will emit an event when playback is done
-        // which we listen for in the onMount function
+        await playAudioFromPath(audioPath);
       } else if (audioSrc) {
-        // Extract the base64 data from the data URL
-        const dataMatch = audioSrc.match(/^data:([^;]+);base64,(.+)$/);
-        if (!dataMatch) {
-          isPlaying = false;
-          throw new Error("Invalid audio data URL format");
-        }
-        
-        const mimeType = dataMatch[1];
-        const base64Data = dataMatch[2];
-        
-        // Use native playback with base64 data
-        const result = await invoke('play_audio_from_base64', { 
-          base64_data: base64Data, 
-          mime_type: mimeType 
-        });
-        
-        if (!result.success) {
-          isPlaying = false;
-          throw new Error(result.error || "Unknown error playing audio");
-        }
-        
-        // The backend will emit an event when playback is done
-        // which we listen for in the onMount function
+        await playAudioFromBase64(audioSrc);
       }
     } catch (error) {
       isPlaying = false;
@@ -264,10 +173,7 @@
   
   async function stopPlayback() {
     try {
-      const result = await invoke('stop_audio');
-      if (!result.success) {
-        console.error("Error stopping playback:", result.error);
-      }
+      await stopAudio();
       isPlaying = false;
       statusMessage = "Playback stopped.";
     } catch (error) {
@@ -275,13 +181,6 @@
       console.error("Error stopping playback:", error);
       statusMessage = `Error stopping playback: ${error}`;
     }
-  }
-
-  // Format seconds as MM:SS
-  function formatTime(seconds: number): string {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
 
   // Handle recording button events
@@ -349,24 +248,23 @@
       return;
     }
     
-    invoke('set_audio_config', { 
-      channels: selectedChannels, 
-      sampleRate: selectedSampleRate 
-    }).then(() => {
-      statusMessage = "Audio settings applied";
-      // Update the current device display but don't reload audio config 
-      // which would reset to device defaults
-      if (currentDevice) {
-        currentDevice = {
-          ...currentDevice,
-          channels: selectedChannels,
-          sample_rate: selectedSampleRate
-        };
-      }
-    }).catch(error => {
-      console.error("Error applying audio settings:", error);
-      statusMessage = `Error: ${error}`;
-    });
+    applySettings(selectedChannels, selectedSampleRate)
+      .then(() => {
+        statusMessage = "Audio settings applied";
+        // Update the current device display but don't reload audio config 
+        // which would reset to device defaults
+        if (currentDevice) {
+          currentDevice = {
+            ...currentDevice,
+            channels: selectedChannels,
+            sample_rate: selectedSampleRate
+          };
+        }
+      })
+      .catch(error => {
+        console.error("Error applying audio settings:", error);
+        statusMessage = `Error: ${error}`;
+      });
   }
 </script>
 

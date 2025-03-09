@@ -9,7 +9,9 @@
 - `npm run tauri build` - Build Tauri application for production
 - `npm run preview` - Preview the built application
 - `cargo test -p rekt_lib -- test_name` - Run a specific Rust test
+- `cargo test -p rekt_lib` - Run all Rust tests
 - `cargo check` - Check Rust code for errors without building
+- `cargo clippy` - Run Rust linter
 - `./build-appimage.sh` - Build AppImage for Linux distribution
 
 ## Code Style Guidelines
@@ -20,7 +22,7 @@
 - **Naming**: camelCase for JS/TS variables/functions, PascalCase for components, snake_case for Rust
 - **State Management**: Store UI state with Svelte's reactive primitives, use Rust for persistent state
 - **Types**: Provide explicit return types on functions, avoid `any`, use interfaces for complex structures
-- **Error Handling**: Use try/catch blocks for async operations with user-friendly error messages
+- **Error Handling**: Use try/catch for JS/TS async operations, Result/Option for Rust with descriptive messages
 - **File Structure**: Follow SvelteKit conventions with +page.svelte pattern
 - **Path Aliases**: Use $lib for imports from src/lib folder
 
@@ -28,6 +30,6 @@
 - **Frontend**: SvelteKit with TypeScript and Vite
 - **Backend**: Tauri with Rust
 - **Audio Processing**: Uses cpal library for audio recording and hound for WAV file creation
-- **Persistence**: Saves recordings to app data directory
+- **Persistence**: Saves recordings to app data directory using Tauri's filesystem APIs
 - **IPC**: Tauri commands for frontend-backend communication
 - **Thread Safety**: Uses Arc, Mutex, and AtomicBool for thread-safe state management in Rust
