@@ -1,17 +1,15 @@
 use std::fs::File;
-use std::io::{Read, Write, BufReader};
+use std::io::{BufReader, Write};
 // use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use base64::prelude::*;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State, Emitter};
-use tempfile::NamedTempFile;
 
 //
 // ====== AUDIO INPUT (RECORDING) STATE ======
@@ -96,18 +94,20 @@ impl BackgroundRecorder {
                 }
             };
 
-            // Store the actual device format into the state
-            let actual_channels = config.channels();
-            let actual_sample_rate = config.sample_rate().0;
-
-            {
-                let mut ch_lock = thread_state.channels.lock().unwrap();
-                let mut sr_lock = thread_state.sample_rate.lock().unwrap();
-                *ch_lock = actual_channels;
-                *sr_lock = actual_sample_rate;
-            }
-
-            println!("Recording with {} channel(s) at {} Hz", actual_channels, actual_sample_rate);
+            // Get current channels and sample rate values
+            let (channels, sample_rate) = {
+                let ch_lock = thread_state.channels.lock().unwrap();
+                let sr_lock = thread_state.sample_rate.lock().unwrap();
+                
+                // Only use device defaults if user hasn't set custom values
+                let ch = if *ch_lock == 0 { config.channels() } else { *ch_lock };
+                let sr = if *sr_lock == 0 { config.sample_rate().0 } else { *sr_lock };
+                
+                (ch, sr)
+            };
+            
+            // Print the values we're using
+            println!("Recording with {} channel(s) at {} Hz", channels, sample_rate);
 
             let err_fn = |err| eprintln!("An error occurred on the input stream: {}", err);
 
@@ -115,10 +115,20 @@ impl BackgroundRecorder {
             let u16_state = Arc::clone(&thread_state);
             let f32_state = Arc::clone(&thread_state);
 
-            // Build the input stream using the actual default config
-            let stream = match config.sample_format() {
+            // Build our custom config based on user settings (or defaults)
+            let sample_format = config.sample_format();
+            
+            // Create a custom config with the user's settings
+            let custom_config = cpal::StreamConfig {
+                channels,
+                sample_rate: cpal::SampleRate(sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            
+            // Build the input stream using our custom config
+            let stream = match sample_format {
                 SampleFormat::I16 => device.build_input_stream(
-                    &config.into(),
+                    &custom_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         if i16_state.is_recording.load(Ordering::SeqCst) {
                             if let Ok(mut audio_data) = i16_state.audio_data.lock() {
@@ -130,7 +140,7 @@ impl BackgroundRecorder {
                     None,
                 ),
                 SampleFormat::U16 => device.build_input_stream(
-                    &config.into(),
+                    &custom_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         if u16_state.is_recording.load(Ordering::SeqCst) {
                             if let Ok(mut audio_data) = u16_state.audio_data.lock() {
@@ -145,7 +155,7 @@ impl BackgroundRecorder {
                     None,
                 ),
                 SampleFormat::F32 => device.build_input_stream(
-                    &config.into(),
+                    &custom_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         if f32_state.is_recording.load(Ordering::SeqCst) {
                             if let Ok(mut audio_data) = f32_state.audio_data.lock() {
@@ -353,6 +363,11 @@ async fn stop_recording(
     // Retrieve the actual channels and sample rate we used
     let channels = *state.channels.lock().unwrap();
     let sample_rate = *state.sample_rate.lock().unwrap();
+    
+    // Make sure we're not using zero values (which would be defaults that weren't properly set)
+    let channels = if channels == 0 { 1 } else { channels };
+    let sample_rate = if sample_rate == 0 { 44100 } else { sample_rate };
+    
     println!("Writing WAV with {} channel(s) at {} Hz", channels, sample_rate);
 
     // Create WAV
@@ -395,7 +410,7 @@ async fn stop_recording(
 
 // This function is no longer used, but keeping it as a reference
 #[tauri::command]
-async fn get_audio_data(path: String) -> Result<AudioDataResponse, String> {
+async fn get_audio_data(_path: String) -> Result<AudioDataResponse, String> {
     // This function is deprecated
     Ok(AudioDataResponse {
         success: false,
@@ -681,10 +696,10 @@ fn stop_audio_internal(playback_state: &AudioPlaybackState) {
 // This function is no longer used, but keeping it as a reference
 #[tauri::command]
 async fn play_audio_from_base64(
-    base64_data: String,
-    mime_type: String,
-    app_handle: AppHandle,
-    playback_state: State<'_, AudioPlaybackState>,
+    _base64_data: String,
+    _mime_type: String,
+    _app_handle: AppHandle,
+    _playback_state: State<'_, AudioPlaybackState>,
 ) -> Result<AudioPlaybackResponse, String> {
     // This function is deprecated
     Ok(AudioPlaybackResponse {

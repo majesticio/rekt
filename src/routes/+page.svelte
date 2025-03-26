@@ -1,4 +1,3 @@
-<!-- Svelte component -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
@@ -64,11 +63,38 @@
       statusMessage = "Playback complete.";
     });
     
+    // Add document click handler for settings panel
+    document.addEventListener('click', handleDocumentClick);
+    
     // Cleanup listener on component unmount
     return () => {
       unlistenPromise.then(unlistenFn => unlistenFn());
+      document.removeEventListener('click', handleDocumentClick);
     };
   });
+  
+  // Handle document clicks for the settings panel
+  function handleDocumentClick(e: MouseEvent) {
+    if (!showSettings) return;
+    
+    // Check if the click target or its parents have the class 'settings-panel' or 'icon-button'
+    let isSettingsClick = false;
+    let target = e.target as Node;
+    
+    while (target && target !== document) {
+      if ((target as Element).classList && 
+          ((target as Element).classList.contains('settings-panel') || 
+           (target as Element).classList.contains('icon-button'))) {
+        isSettingsClick = true;
+        break;
+      }
+      target = target.parentNode;
+    }
+    
+    if (!isSettingsClick) {
+      toggleSettings();
+    }
+  }
   
   // Theme toggle
   function toggleTheme() {
@@ -219,7 +245,29 @@
     }
   }
   
-  function toggleSettings() {
+  async function toggleSettings() {
+    // If we're currently showing settings and about to close them, apply the settings
+    if (showSettings && !isRecording) {
+      try {
+        await applySettings(selectedChannels, selectedSampleRate);
+        
+        // Update the current device display
+        if (currentDevice) {
+          currentDevice = {
+            ...currentDevice,
+            channels: selectedChannels,
+            sample_rate: selectedSampleRate
+          };
+        }
+        
+        statusMessage = "Audio settings applied";
+      } catch (error) {
+        console.error("Error applying audio settings:", error);
+        statusMessage = `Error: ${error}`;
+      }
+    }
+    
+    // Toggle settings visibility
     showSettings = !showSettings;
   }
   
@@ -234,30 +282,7 @@
     }
   }
   
-  function applyAudioSettings() {
-    if (isRecording) {
-      statusMessage = "Cannot change audio settings while recording";
-      return;
-    }
-    
-    applySettings(selectedChannels, selectedSampleRate)
-      .then(() => {
-        statusMessage = "Audio settings applied";
-        // Update the current device display but don't reload audio config 
-        // which would reset to device defaults
-        if (currentDevice) {
-          currentDevice = {
-            ...currentDevice,
-            channels: selectedChannels,
-            sample_rate: selectedSampleRate
-          };
-        }
-      })
-      .catch(error => {
-        console.error("Error applying audio settings:", error);
-        statusMessage = `Error: ${error}`;
-      });
-  }
+  // This function has been replaced by auto-applying when the settings panel is closed
 </script>
 
 <div class="app" data-theme={theme}>
@@ -354,16 +379,6 @@
             <option value={44100}>44.1 kHz</option>
             <option value={48000}>48 kHz</option>
           </select>
-        </div>
-        
-        <div class="settings-actions">
-          <button 
-            class="settings-button" 
-            onclick={applyAudioSettings}
-            disabled={isRecording}
-          >
-            Apply Settings
-          </button>
         </div>
       </div>
     {/if}
