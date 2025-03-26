@@ -15,7 +15,6 @@
   
   import {
     playAudioFromPath,
-    playAudioFromBase64,
     stopPlayback as stopAudio,
     setupPlaybackListener
   } from '$lib/playback';
@@ -23,7 +22,6 @@
   // Recording state
   let isRecording = $state(false);
   let audioPath = $state<string | null>(null);
-  let audioSrc = $state<string | null>(null);
   let statusMessage = $state("Ready to record. Press the button to start.");
   let isLoading = $state(false);
   let recordingTime = $state(0);
@@ -138,7 +136,6 @@
       
       isRecording = false;
       audioPath = result.audioPath;
-      audioSrc = result.audioSrc;
       statusMessage = `Recording saved (${formatTime(recordingTime)}). Ready to play.`;
     } catch (error) {
       console.error("Error stopping recording:", error);
@@ -150,7 +147,7 @@
   }
 
   async function playRecording() {
-    if (!audioSrc && !audioPath) {
+    if (!audioPath) {
       statusMessage = "No recording available.";
       return;
     }
@@ -158,12 +155,7 @@
     try {
       statusMessage = "Playing recording...";
       isPlaying = true;
-      
-      if (audioPath) {
-        await playAudioFromPath(audioPath);
-      } else if (audioSrc) {
-        await playAudioFromBase64(audioSrc);
-      }
+      await playAudioFromPath(audioPath);
     } catch (error) {
       isPlaying = false;
       console.error("Error playing recording:", error);
@@ -427,7 +419,7 @@
         </div>
       </button>
       
-      {#if audioSrc || audioPath}
+      {#if audioPath}
         <button 
           class="play-button" 
           class:playing={isPlaying}
@@ -452,11 +444,6 @@
       {/if}
     </div>
     
-    {#if audioSrc}
-      <div class="audio-player-container" transition:fade={{ duration: 300 }}>
-        <audio controls src={audioSrc} class="audio-player"></audio>
-      </div>
-    {/if}
   </main>
 </div>
 

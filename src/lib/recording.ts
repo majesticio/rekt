@@ -82,8 +82,7 @@ export async function startRecording(channels: number, sampleRate: number): Prom
 
 // Stop recording
 export async function stopRecording(): Promise<{
-  audioPath: string,
-  audioSrc: string
+  audioPath: string
 }> {
   const result = await invoke('stop_recording') as { 
     success: boolean, 
@@ -95,22 +94,5 @@ export async function stopRecording(): Promise<{
     throw new Error(result.error || 'Unknown error');
   }
   
-  const audioPath = result.path;
-  
-  // Get audio data as base64
-  const audioData = await invoke('get_audio_data', { path: result.path }) as {
-    success: boolean,
-    data?: string,
-    mime_type: string,
-    error?: string
-  };
-  
-  if (!audioData.success || !audioData.data) {
-    throw new Error(audioData.error || 'Failed to load audio data');
-  }
-  
-  // Create data URL
-  const audioSrc = `data:${audioData.mime_type};base64,${audioData.data}`;
-  
-  return { audioPath, audioSrc };
+  return { audioPath: result.path };
 }

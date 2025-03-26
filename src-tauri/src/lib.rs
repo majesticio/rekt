@@ -393,32 +393,15 @@ async fn stop_recording(
     })
 }
 
-// Return the recorded file as base64
+// This function is no longer used, but keeping it as a reference
 #[tauri::command]
 async fn get_audio_data(path: String) -> Result<AudioDataResponse, String> {
-    let mut file = File::open(&path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
-
-    // Base64 encode
-    let base64_data = BASE64_STANDARD.encode(&buffer);
-
-    // Infer MIME
-    let mime_type = if path.ends_with(".wav") {
-        "audio/wav"
-    } else if path.ends_with(".mp3") {
-        "audio/mp3"
-    } else {
-        "audio/octet-stream"
-    };
-
+    // This function is deprecated
     Ok(AudioDataResponse {
-        success: true,
-        data: Some(base64_data),
-        mime_type: mime_type.to_string(),
-        error: None,
+        success: false,
+        data: None,
+        mime_type: "".to_string(),
+        error: Some("This function is deprecated. Use direct file paths instead.".to_string()),
     })
 }
 
@@ -695,7 +678,7 @@ fn stop_audio_internal(playback_state: &AudioPlaybackState) {
     }
 }
 
-// Play audio from base64 data
+// This function is no longer used, but keeping it as a reference
 #[tauri::command]
 async fn play_audio_from_base64(
     base64_data: String,
@@ -703,117 +686,11 @@ async fn play_audio_from_base64(
     app_handle: AppHandle,
     playback_state: State<'_, AudioPlaybackState>,
 ) -> Result<AudioPlaybackResponse, String> {
-    stop_audio_internal(&playback_state);
-
-    let playback_id = nanoid::nanoid!();
-    *playback_state.current_playback_id.lock().unwrap() = Some(playback_id.clone());
-    playback_state.is_playing.store(true, Ordering::SeqCst);
-
-    let audio_data = BASE64_STANDARD
-        .decode(base64_data.as_bytes())
-        .map_err(|e| format!("Failed to decode base64: {}", e))?;
-
-    // We create a temporary file
-    let _extension = if mime_type.contains("wav") {
-        ".wav"
-    } else if mime_type.contains("mp3") {
-        ".mp3"
-    } else {
-        ".wav" // fallback
-    };
-
-    let mut temp_file = NamedTempFile::new()
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
-    temp_file.write_all(&audio_data)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-    let path_clone = temp_file.path().to_path_buf();
-    let playback_id_clone = playback_id.clone();
-
-    // Possibly re-init output device
-    let mut need_init = !playback_state.device_initialized.load(Ordering::SeqCst);
-    let mut stream_handle_option = None;
-    {
-        let out_guard = playback_state.output_stream.lock().unwrap();
-        if let Some(ref output) = *out_guard {
-            stream_handle_option = Some(output.handle.clone());
-        } else {
-            need_init = true;
-        }
-    }
-
-    if need_init {
-        use rodio::OutputStream;
-        match OutputStream::try_default() {
-            Ok((stream, handle)) => {
-                if let Ok(mut out) = playback_state.output_stream.lock() {
-                    *out = Some(AudioOutputStream {
-                        stream,
-                        handle: handle.clone(),
-                    });
-                }
-                playback_state.device_initialized.store(true, Ordering::SeqCst);
-                stream_handle_option = Some(handle);
-            }
-            Err(e) => {
-                playback_state.is_playing.store(false, Ordering::SeqCst);
-                return Err(format!("Failed to create output stream: {}", e));
-            }
-        }
-    }
-
-    let stream_handle = match stream_handle_option {
-        Some(h) => h,
-        None => {
-            playback_state.is_playing.store(false, Ordering::SeqCst);
-            return Err("Failed to get output stream handle".to_string());
-        }
-    };
-
-    // Spawn thread for playback
-    thread::spawn(move || {
-        use rodio::{Decoder, Sink};
-
-        // Keep the temp file alive
-        let file = match File::open(path_clone) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Failed to open temp file: {}", e);
-                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-                return;
-            }
-        };
-
-        let buf_reader = BufReader::new(file);
-        let source = match Decoder::new(buf_reader) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed to decode base64 audio: {}", e);
-                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-                return;
-            }
-        };
-
-        let sink = match Sink::try_new(&stream_handle) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Failed creating Sink: {}", e);
-                let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-                return;
-            }
-        };
-
-        sink.append(source);
-        sink.sleep_until_end();
-
-        let _ = app_handle.emit("audio-playback-stopped", AudioPlaybackEvent { playback_id: playback_id_clone });
-        // temp_file drops here
-    });
-
+    // This function is deprecated
     Ok(AudioPlaybackResponse {
-        success: true,
-        is_playing: true,
-        error: None,
+        success: false,
+        is_playing: false,
+        error: Some("This function is deprecated. Use direct file paths instead.".to_string()),
     })
 }
 
