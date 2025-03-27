@@ -458,6 +458,35 @@ async fn get_audio_data(_path: String) -> Result<AudioDataResponse, String> {
     })
 }
 
+// Copy recording file to user-specified location
+#[tauri::command]
+async fn copy_recording(source_path: String, destination_path: String) -> Result<(), String> {
+    use std::fs;
+    use std::path::Path;
+
+    println!("Copying recording from {} to {}", source_path, destination_path);
+
+    // Verify source file exists
+    if !Path::new(&source_path).exists() {
+        return Err(format!("Source file '{}' does not exist", source_path));
+    }
+    
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = Path::new(&destination_path).parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create destination directory: {}", e))?;
+        }
+    }
+    
+    // Copy the file
+    fs::copy(&source_path, &destination_path)
+        .map_err(|e| format!("Failed to copy file: {}", e))?;
+    
+    println!("Recording successfully copied to {}", destination_path);
+    Ok(())
+}
+
 // Check if currently recording
 #[tauri::command]
 fn is_recording(state: State<'_, Arc<RecordingState>>) -> bool {
@@ -1046,6 +1075,7 @@ pub fn run() {
             set_audio_config,
             get_current_audio_config,
             get_audio_devices,
+            copy_recording,
             // Playback
             play_audio,
             stop_audio,

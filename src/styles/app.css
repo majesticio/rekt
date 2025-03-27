@@ -11,6 +11,8 @@
   --record-active: #dc2626;
   --play-color: #10b981;
   --play-active: #059669;
+  --save-color: #3b82f6;
+  --save-active: #2563eb;
   --border-color: #e9ecef;
   --shadow-color: rgba(0, 0, 0, 0.1);
 }
@@ -27,6 +29,8 @@
   --record-active: #b91c1c;
   --play-color: #10b981;
   --play-active: #059669;
+  --save-color: #3b82f6;
+  --save-active: #2563eb;
   --border-color: #3f3f46;
   --shadow-color: rgba(0, 0, 0, 0.25);
 }
@@ -250,6 +254,15 @@ select:disabled {
   margin-bottom: 2rem;
 }
 
+.button-group {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.button-group button {
+  flex: 1;
+}
+
 button {
   border: none;
   border-radius: 1rem;
@@ -320,6 +333,21 @@ button:disabled {
 
 .play-button.playing:hover {
   background-color: var(--text-color);
+}
+
+.save-button {
+  background-color: var(--save-color);
+  color: white;
+  height: 3.5rem;
+  border-radius: 1.75rem;
+}
+
+.save-button:hover {
+  background-color: var(--save-active);
+}
+
+.save-button:active {
+  transform: scale(0.98);
 }
 
 .audio-player-container {

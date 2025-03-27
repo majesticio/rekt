@@ -3,6 +3,7 @@
   import { fade, scale } from 'svelte/transition';
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from "@tauri-apps/api/core";
+  import { save } from '@tauri-apps/plugin-dialog';
   
   // Import our extracted functionality
   import { 
@@ -345,6 +346,51 @@
   }
   
   // This function has been replaced by auto-applying when the settings panel is closed
+  
+  // Save recording to user-selected location
+  async function handleSaveClick() {
+    if (!audioPath) {
+      statusMessage = "No recording available to save.";
+      return;
+    }
+    
+    try {
+      // Determine file extension from audioPath
+      const extension = audioPath.split('.').pop()?.toLowerCase() || 'wav';
+      const defaultName = `recording_${new Date().toISOString().replace(/[:.]/g, '-')}.${extension}`;
+      
+      // Show save dialog to get save path from user
+      const savePath = await save({
+        filters: [{
+          name: 'Audio Files',
+          extensions: ['wav', 'mp3']
+        }],
+        defaultPath: defaultName
+      });
+      
+      if (!savePath) {
+        // User cancelled the save dialog
+        return;
+      }
+      
+      // Copy the recording to the user's chosen location
+      statusMessage = "Saving recording...";
+      isLoading = true;
+      
+      // Use Tauri command to copy the file
+      await invoke('copy_recording', { 
+        sourcePath: audioPath,
+        destinationPath: savePath
+      });
+      
+      statusMessage = `Recording saved to ${savePath}`;
+    } catch (error) {
+      console.error("Error saving recording:", error);
+      statusMessage = `Error saving recording: ${error}`;
+    } finally {
+      isLoading = false;
+    }
+  }
 </script>
 
 <div class="app" data-theme={theme}>
@@ -497,27 +543,43 @@
       </button>
       
       {#if audioPath}
-        <button 
-          class="play-button" 
-          class:playing={isPlaying}
-          onclick={handlePlayClick}
-          disabled={isLoading}
-          aria-label={isPlaying ? "Stop Playback" : "Play Recording"}
-        >
-          <div class="button-content">
-            {#if isPlaying}
+        <div class="button-group">
+          <button 
+            class="play-button" 
+            class:playing={isPlaying}
+            onclick={handlePlayClick}
+            disabled={isLoading}
+            aria-label={isPlaying ? "Stop Playback" : "Play Recording"}
+          >
+            <div class="button-content">
+              {#if isPlaying}
+                <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 6h4v12H6zm8 0h4v12h-4z"/>
+                </svg>
+                <span>Stop</span>
+              {:else}
+                <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                <span>Play</span>
+              {/if}
+            </div>
+          </button>
+          
+          <button 
+            class="save-button"
+            onclick={handleSaveClick}
+            disabled={isLoading}
+            aria-label="Save Recording"
+          >
+            <div class="button-content">
               <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M6 6h4v12H6zm8 0h4v12h-4z"/>
+                <path d="M19 12v7H5v-7H3v7c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-7h-2zm-6 .67l2.59-2.58L17 11.5l-5 5-5-5 1.41-1.41L11 12.67V3h2z"/>
               </svg>
-              <span>Stop</span>
-            {:else}
-              <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M8 5v14l11-7z"/>
-              </svg>
-              <span>Play</span>
-            {/if}
-          </div>
-        </button>
+              <span>Save</span>
+            </div>
+          </button>
+        </div>
       {/if}
     </div>
     
