@@ -19,6 +19,11 @@
     setupPlaybackListener
   } from '$lib/playback';
   
+  import {
+    setupTrayRecording,
+    updateTrayRecordingSettings
+  } from '$lib/tray';
+  
   // Recording state
   let isRecording = $state(false);
   let audioPath = $state<string | null>(null);
@@ -122,6 +127,9 @@
       currentDevice = config.currentDevice;
       selectedChannels = config.selectedChannels;
       selectedSampleRate = config.selectedSampleRate;
+      
+      // Setup tray recording with initial settings
+      await setupTrayRecording(selectedDevice, selectedChannels, selectedSampleRate);
       
       statusMessage = "Ready to record. Press the button to start.";
     } catch (error) {
@@ -275,6 +283,9 @@
             sample_rate: selectedSampleRate
           };
         }
+        
+        // Update tray recording settings
+        updateTrayRecordingSettings(selectedDevice, selectedChannels, selectedSampleRate);
         
         statusMessage = "Audio settings applied";
       } catch (error) {

@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,6 +10,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::tray::TrayIconBuilder;
 
 //
 // ====== AUDIO INPUT (RECORDING) STATE ======
@@ -538,7 +539,7 @@ fn get_audio_devices() -> Result<AudioConfigResponse, String> {
 fn set_audio_config(
     app_handle: AppHandle,
     state: State<'_, Arc<RecordingState>>,
-    deviceName: String,
+    device_name: String,
     channels: u16,
     sample_rate: u32,
 ) -> Result<(), String> {
@@ -563,7 +564,7 @@ fn set_audio_config(
     *state.sample_rate.lock().unwrap() = sample_rate;
     
     // Save to file - this will persist settings across app restarts
-    save_audio_config(&state, &app_handle, &deviceName)?;
+    save_audio_config(&state, &app_handle, &device_name)?;
 
     println!("Audio config set to {} ch, {} Hz and saved to file", channels, sample_rate);
     Ok(())
@@ -924,8 +925,11 @@ fn init_audio_system() -> Result<bool, String> {
     }
 }
 
+// Tray recording functionality is now handled directly in the event listener
+
 pub fn run() {
     println!("Initializing audio system with correct, per-session device config");
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         // Initialize persisted-scope plugin to save permission grants
@@ -935,6 +939,41 @@ pub fn run() {
         .manage(AudioPlaybackState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            // Create simple menu items
+            let show_item = tauri::menu::MenuItemBuilder::with_id("show", "Show Window").build(app)?;
+            let quit_item = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            
+            // Create menu 
+            let menu = tauri::menu::MenuBuilder::new(app)
+                .item(&show_item)
+                .item(&quit_item)
+                .build()?;
+            
+            // Create the tray icon
+            let _tray = TrayIconBuilder::new()
+                .tooltip("Voice Recorder (Hold to Record)")  // No Some() needed in Tauri 2
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+            
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Recording
             start_recording,
