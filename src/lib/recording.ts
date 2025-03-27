@@ -1,5 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 
+// Initialize the audio system - this will trigger system permission prompt if needed
+export async function initAudioSystem(): Promise<boolean> {
+  try {
+    return await invoke('init_audio_system') as boolean;
+  } catch (error) {
+    console.warn('Failed to initialize audio system:', error);
+    return false;
+  }
+}
+
 // Types
 export type AudioDeviceInfo = {
   name: string;
@@ -42,7 +52,7 @@ export async function loadAudioConfig(): Promise<{
   let selectedChannels: number;
   let selectedSampleRate: number;
   
-  // Then get current audio settings which may include user customizations
+  // Then get current audio settings which may include user customizations and saved settings
   try {
     const currentConfig = await invoke('get_current_audio_config') as AudioDeviceInfo;
     currentDevice = currentConfig;
@@ -66,17 +76,18 @@ export async function loadAudioConfig(): Promise<{
 }
 
 // Apply audio settings
-export async function applyAudioSettings(channels: number, sampleRate: number): Promise<void> {
+export async function applyAudioSettings(deviceName: string, channels: number, sampleRate: number): Promise<void> {
   await invoke('set_audio_config', { 
+    deviceName,
     channels, 
     sampleRate
   });
 }
 
 // Start recording
-export async function startRecording(channels: number, sampleRate: number): Promise<void> {
+export async function startRecording(deviceName: string, channels: number, sampleRate: number): Promise<void> {
   // Apply selected audio configuration before recording
-  await applyAudioSettings(channels, sampleRate);
+  await applyAudioSettings(deviceName, channels, sampleRate);
   await invoke('start_recording');
 }
 

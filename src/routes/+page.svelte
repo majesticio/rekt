@@ -9,7 +9,8 @@
     loadAudioConfig, 
     applyAudioSettings as applySettings,
     startRecording as startRec,
-    stopRecording as stopRec
+    stopRecording as stopRec,
+    initAudioSystem
   } from '$lib/recording';
   
   import {
@@ -25,6 +26,7 @@
   let isLoading = $state(false);
   let recordingTime = $state(0);
   let recordingTimer: number;
+  let microphoneAccessGranted = $state(false); // Track whether microphone access has been granted
   
   // Audio configuration
   let audioDevices = $state<AudioDeviceInfo[]>([]);
@@ -44,6 +46,11 @@
     if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
       theme = 'dark';
     }
+    
+    // Initialize audio system on startup (will trigger system permission dialog if needed)
+    initAudioSystem().then(granted => {
+      microphoneAccessGranted = granted;
+    });
     
     // Load audio config
     loadAudioConfiguration();
@@ -130,7 +137,16 @@
     try {
       isLoading = true;
       
-      await startRec(selectedChannels, selectedSampleRate);
+      // Initialize audio system - this will trigger system permission prompt if needed
+      microphoneAccessGranted = await initAudioSystem();
+      
+      if (!microphoneAccessGranted) {
+        statusMessage = "Microphone access is required for recording.";
+        return;
+      }
+      
+      // Now proceed with recording (user has granted permission)
+      await startRec(selectedDevice, selectedChannels, selectedSampleRate);
       isRecording = true;
       statusMessage = "Recording...";
       
@@ -249,7 +265,7 @@
     // If we're currently showing settings and about to close them, apply the settings
     if (showSettings && !isRecording) {
       try {
-        await applySettings(selectedChannels, selectedSampleRate);
+        await applySettings(selectedDevice, selectedChannels, selectedSampleRate);
         
         // Update the current device display
         if (currentDevice) {

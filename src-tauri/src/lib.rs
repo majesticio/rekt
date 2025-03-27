@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::io::{BufReader, Write};
-// use std::path::PathBuf;
+use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 //
@@ -30,6 +30,7 @@ struct RecordingState {
     channels: Mutex<u16>,
     sample_rate: Mutex<u32>,
     input_stream: Mutex<Option<AudioInputStream>>,
+    config_path: Mutex<Option<std::path::PathBuf>>,
 }
 
 /// Background recorder spawns a thread that keeps recording
@@ -312,12 +313,19 @@ struct AudioConfigResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct AudioDeviceInfo {
     name: String,
     channels: u16,
     sample_rate: u32,
     formats: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SavedAudioConfig {
+    device_name: String,
+    channels: u16,
+    sample_rate: u32,
 }
 
 //
@@ -525,10 +533,12 @@ fn get_audio_devices() -> Result<AudioConfigResponse, String> {
     })
 }
 
-// Set user-chosen config (currently just stored; not used in build_input_stream)
+// Set user-chosen config and save to file
 #[tauri::command]
 fn set_audio_config(
+    app_handle: AppHandle,
     state: State<'_, Arc<RecordingState>>,
+    deviceName: String,
     channels: u16,
     sample_rate: u32,
 ) -> Result<(), String> {
@@ -548,30 +558,145 @@ fn set_audio_config(
         ));
     }
 
+    // Update in-memory state
     *state.channels.lock().unwrap() = channels;
     *state.sample_rate.lock().unwrap() = sample_rate;
+    
+    // Save to file - this will persist settings across app restarts
+    save_audio_config(&state, &app_handle, &deviceName)?;
 
-    println!("Audio config set to {} ch, {} Hz", channels, sample_rate);
+    println!("Audio config set to {} ch, {} Hz and saved to file", channels, sample_rate);
     Ok(())
+}
+
+// Helper function to initialize config file path
+fn init_config_path(state: &Arc<RecordingState>, app_handle: &AppHandle) -> Result<PathBuf, String> {
+    let mut config_path_guard = state.config_path.lock().unwrap();
+    
+    // Return existing path if already initialized
+    if let Some(path) = config_path_guard.clone() {
+        return Ok(path);
+    }
+    
+    // Get app data directory
+    let app_dir = app_handle
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+
+    // Create directory if it doesn't exist
+    std::fs::create_dir_all(&app_dir)
+        .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+    
+    // Create config file path
+    let config_path = app_dir.join("audio_config.json");
+    
+    // Store path for future use
+    *config_path_guard = Some(config_path.clone());
+    
+    Ok(config_path)
+}
+
+// Helper function to save audio configuration to file
+fn save_audio_config(
+    state: &Arc<RecordingState>,
+    app_handle: &AppHandle,
+    device_name: &str
+) -> Result<(), String> {
+    // Get config path
+    let config_path = init_config_path(state, app_handle)?;
+    
+    // Prepare config data
+    let config = SavedAudioConfig {
+        device_name: device_name.to_string(),
+        channels: *state.channels.lock().unwrap(),
+        sample_rate: *state.sample_rate.lock().unwrap(),
+    };
+    
+    // Serialize to JSON
+    let json = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    
+    // Write to file
+    let mut file = File::create(config_path)
+        .map_err(|e| format!("Failed to create config file: {}", e))?;
+    
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    
+    println!("Audio config saved to file");
+    Ok(())
+}
+
+// Helper function to load audio configuration from file
+fn load_audio_config(
+    state: &Arc<RecordingState>, 
+    app_handle: &AppHandle,
+) -> Result<Option<SavedAudioConfig>, String> {
+    // Get config path
+    let config_path = init_config_path(state, app_handle)?;
+    
+    // Check if file exists
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    
+    // Read file
+    let mut file = File::open(config_path)
+        .map_err(|e| format!("Failed to open config file: {}", e))?;
+    
+    let mut json = String::new();
+    file.read_to_string(&mut json)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    
+    // Deserialize from JSON
+    let config = serde_json::from_str::<SavedAudioConfig>(&json)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    
+    println!("Audio config loaded from file");
+    Ok(Some(config))
 }
 
 // Get the currently stored config (not necessarily the device's default)
 #[tauri::command]
 fn get_current_audio_config(
+    app_handle: AppHandle,
     state: State<'_, Arc<RecordingState>>,
 ) -> Result<AudioDeviceInfo, String> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .ok_or_else(|| "No default input device available.".to_string())?;
-    let name = device.name().unwrap_or_else(|_| "Unknown".to_string());
-
+    
+    // Get device info
+    let device_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
     let device_config = device
         .default_input_config()
         .map_err(|e| format!("Failed to get device config: {}", e))?;
-
-    let stored_channels = *state.channels.lock().unwrap();
-    let stored_rate = *state.sample_rate.lock().unwrap();
+        
+    // Try to load saved config
+    let saved_config = load_audio_config(&state, &app_handle).ok().flatten();
+    
+    // Use saved values if available, otherwise use current in-memory values with device defaults as fallback
+    let (name, stored_channels, stored_rate) = if let Some(config) = saved_config {
+        // If we have saved config but the selected device has changed, still use the saved device's values
+        // but update the device name to match the current one
+        (device_name, config.channels, config.sample_rate)
+    } else {
+        // No saved config, use in-memory values
+        let stored_channels = *state.channels.lock().unwrap();
+        let stored_rate = *state.sample_rate.lock().unwrap();
+        (device_name, stored_channels, stored_rate)
+    };
+    
+    // Update the in-memory values with what we're actually using
+    if stored_channels > 0 {
+        *state.channels.lock().unwrap() = stored_channels;
+    }
+    if stored_rate > 0 {
+        *state.sample_rate.lock().unwrap() = stored_rate;
+    }
 
     // If stored is zero (never set), fallback to device default
     let channels = if stored_channels == 0 {
@@ -774,10 +899,36 @@ async fn play_audio_from_base64(
 //
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[tauri::command]
+fn init_audio_system() -> Result<bool, String> {
+    // Initialize audio system to avoid beeps on first recording
+    let host = cpal::default_host();
+    match host.default_input_device() {
+        Some(device) => {
+            // Just query the device name to initialize it
+            match device.name() {
+                Ok(name) => {
+                    println!("Audio system initialized with device: {}", name);
+                    Ok(true)
+                },
+                Err(e) => {
+                    println!("Error getting device name: {}", e);
+                    Ok(false)
+                }
+            }
+        },
+        None => {
+            println!("No default input device found");
+            Ok(false)
+        }
+    }
+}
+
 pub fn run() {
     println!("Initializing audio system with correct, per-session device config");
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
+        // Initialize persisted-scope plugin to save permission grants
         .plugin(tauri_plugin_persisted_scope::init())
         .manage(Arc::new(RecordingState::default()))
         .manage(Mutex::new(BackgroundRecorder::default()))
@@ -798,6 +949,8 @@ pub fn run() {
             stop_audio,
             is_playing,
             play_audio_from_base64,
+            // Audio System Initialization
+            init_audio_system,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
