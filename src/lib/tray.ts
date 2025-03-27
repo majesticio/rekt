@@ -1,4 +1,4 @@
-import { TrayIcon } from '@tauri-apps/api/tray';
+import { tray } from '@tauri-apps/api';
 import { startRecording, stopRecording } from './recording';
 
 // Current default settings to use for tray recording
@@ -14,34 +14,30 @@ export async function setupTrayRecording(currentDevice: string, currentChannels:
   channels = currentChannels;
   sampleRate = currentSampleRate;
   
-  // Get existing tray (created in Rust)
-  const tray = await TrayIcon.get();
-  
-  if (!tray) {
-    console.error("Failed to get tray icon");
-    return;
-  }
-  
-  // Set up click event listener
-  tray.onEvent((event) => {
-    // Only handle click events
-    if (event.type !== 'Click') return;
-    
-    // Check if it's the left mouse button
-    if (event.button === 'left') {
-      // Handle mouse down - start recording
-      if (event.buttonState === 'down' && !isRecording) {
-        handleTrayRecordStart();
-      }
+  try {
+    // In Tauri 2, use tray.onEvent() directly
+    tray.onEvent((event) => {
+      // Only handle click events
+      if (event.type !== 'Click') return;
       
-      // Handle mouse up - stop recording
-      if (event.buttonState === 'up' && isRecording) {
-        handleTrayRecordStop();
+      // Check if it's the left mouse button
+      if (event.button === 'left') {
+        // Handle mouse down - start recording
+        if (event.buttonState === 'down' && !isRecording) {
+          handleTrayRecordStart();
+        }
+        
+        // Handle mouse up - stop recording
+        if (event.buttonState === 'up' && isRecording) {
+          handleTrayRecordStop();
+        }
       }
-    }
-  });
-  
-  console.log("Tray recording setup completed");
+    });
+    
+    console.log("Tray recording setup completed");
+  } catch (error) {
+    console.error("Failed to set up tray event listener:", error);
+  }
 }
 
 // Start recording when tray is clicked
@@ -54,9 +50,10 @@ async function handleTrayRecordStart() {
     isRecording = true;
     
     // Change tray tooltip
-    const tray = await TrayIcon.get();
-    if (tray) {
+    try {
       await tray.setTooltip("Voice Recorder (Recording...)");
+    } catch (e) {
+      console.error("Failed to update tray tooltip:", e);
     }
     
     console.log("Tray recording started");
@@ -75,9 +72,10 @@ async function handleTrayRecordStop() {
     isRecording = false;
     
     // Change tray tooltip back
-    const tray = await TrayIcon.get();
-    if (tray) {
+    try {
       await tray.setTooltip("Voice Recorder (Hold to Record)");
+    } catch (e) {
+      console.error("Failed to update tray tooltip:", e);
     }
     
     console.log("Tray recording stopped, saved to:", result.audioPath);
