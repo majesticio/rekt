@@ -464,6 +464,61 @@ fn is_recording(state: State<'_, Arc<RecordingState>>) -> bool {
     state.is_recording.load(Ordering::SeqCst)
 }
 
+// Use AppHandle::tray_by_id to find the tray
+#[tauri::command]
+fn update_tray_menu_recording_state(app: AppHandle, is_recording: bool) -> Result<(), String> {
+    // We're storing the tray globally, so we'll just rebuild the menu
+    // Create menu items with updated label for record item
+    let record_label = if is_recording { "Stop Recording" } else { "Start Recording" };
+    
+    // Since we can't modify items directly, rebuild the menu
+    let record_item = tauri::menu::MenuItem::with_id(&app, "record", record_label, true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+        
+    let show_item = tauri::menu::MenuItem::with_id(&app, "show", "Show Window", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+        
+    let quit_item = tauri::menu::MenuItem::with_id(&app, "quit", "Quit", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    
+    // Create new menu
+    let menu = tauri::menu::Menu::with_items(&app, &[&record_item, &show_item, &quit_item])
+        .map_err(|e| e.to_string())?;
+    
+    // Rebuild and set the tray with the updated menu
+    let _tray = TrayIconBuilder::new()
+        .tooltip("Voice Recorder (Hold to Record)")
+        .icon(app.default_window_icon().unwrap().clone())
+        .menu(&menu)
+        .show_menu_on_left_click(true)  // Updated deprecated method
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "record" => {
+                    // Toggle recording state by emitting events to the frontend
+                    let window = app.get_webview_window("main");
+                    if let Some(window) = window {
+                        // Emit event to toggle recording from menu
+                        let _ = window.emit("toggle-recording-from-menu", ());
+                    }
+                }
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .build(&app)
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
 // Check if currently playing
 #[tauri::command]
 fn is_playing(playback_state: State<'_, AudioPlaybackState>) -> bool {
@@ -941,23 +996,30 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // Create simple menu items
-            let show_item = tauri::menu::MenuItemBuilder::with_id("show", "Show Window").build(app)?;
-            let quit_item = tauri::menu::MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            // Create menu items using proper Tauri 2 API
+            let record_item = tauri::menu::MenuItem::with_id(app, "record", "Start Recording", true, None::<&str>)?;
+            let show_item = tauri::menu::MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?;
+            let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             
-            // Create menu 
-            let menu = tauri::menu::MenuBuilder::new(app)
-                .item(&show_item)
-                .item(&quit_item)
-                .build()?;
+            // Create menu with items 
+            let menu = tauri::menu::Menu::with_items(app, &[&record_item, &show_item, &quit_item])?;
             
-            // Create the tray icon
+            // Create the tray icon without trying to set an ID
             let _tray = TrayIconBuilder::new()
-                .tooltip("Voice Recorder (Hold to Record)")  // No Some() needed in Tauri 2
+                .tooltip("Voice Recorder (Hold to Record)")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
+                .show_menu_on_left_click(true)  // Updated from deprecated menu_on_left_click
                 .on_menu_event(|app, event| {
                     match event.id.as_ref() {
+                        "record" => {
+                            // Toggle recording state by emitting events to the frontend
+                            let window = app.get_webview_window("main");
+                            if let Some(window) = window {
+                                // Emit event to toggle recording from menu
+                                let _ = window.emit("toggle-recording-from-menu", ());
+                            }
+                        }
                         "show" => {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.show();
@@ -979,6 +1041,7 @@ pub fn run() {
             start_recording,
             stop_recording,
             is_recording,
+            update_tray_menu_recording_state,
             get_audio_data,
             set_audio_config,
             get_current_audio_config,

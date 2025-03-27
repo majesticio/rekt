@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade, scale } from 'svelte/transition';
+  import { listen } from '@tauri-apps/api/event';
+  import { invoke } from "@tauri-apps/api/core";
   
   // Import our extracted functionality
   import { 
@@ -45,6 +47,15 @@
   let theme = $state<'light' | 'dark'>('light');
   let isPlaying = $state(false);
   
+  // Toggle recording from the tray menu
+  async function toggleRecordingFromMenu() {
+    if (isRecording) {
+      await stopRecording();
+    } else {
+      await startRecording();
+    }
+  }
+
   // Initialize theme and listeners
   onMount(() => {
     // Check system preference
@@ -70,17 +81,23 @@
     document.documentElement.setAttribute('data-theme', theme);
     
     // Listen for audio playback events from the backend
-    const unlistenPromise = setupPlaybackListener(() => {
+    const unlistenPlaybackPromise = setupPlaybackListener(() => {
       isPlaying = false;
       statusMessage = "Playback complete.";
+    });
+    
+    // Listen for tray menu record toggle events
+    const unlistenTrayPromise = listen('toggle-recording-from-menu', () => {
+      toggleRecordingFromMenu();
     });
     
     // Add document click handler for settings panel
     document.addEventListener('click', handleDocumentClick);
     
-    // Cleanup listener on component unmount
+    // Cleanup listeners on component unmount
     return () => {
-      unlistenPromise.then(unlistenFn => unlistenFn());
+      unlistenPlaybackPromise.then(unlistenFn => unlistenFn());
+      unlistenTrayPromise.then(unlistenFn => unlistenFn());
       document.removeEventListener('click', handleDocumentClick);
     };
   });
@@ -140,6 +157,15 @@
     }
   }
   
+  // Update tray menu text based on recording state
+  async function updateTrayMenuState(recording: boolean) {
+    try {
+      await invoke('update_tray_menu_recording_state', { isRecording: recording });
+    } catch (error) {
+      console.error("Failed to update tray menu:", error);
+    }
+  }
+
   // Recording functions
   async function startRecording() {
     try {
@@ -157,6 +183,9 @@
       await startRec(selectedDevice, selectedChannels, selectedSampleRate);
       isRecording = true;
       statusMessage = "Recording...";
+      
+      // Update tray menu text
+      await updateTrayMenuState(true);
       
       // Start recording timer
       recordingTime = 0;
@@ -187,10 +216,16 @@
       isRecording = false;
       audioPath = result.audioPath;
       statusMessage = `Recording saved (${formatTime(recordingTime)}). Ready to play.`;
+      
+      // Update tray menu text
+      await updateTrayMenuState(false);
     } catch (error) {
       console.error("Error stopping recording:", error);
       statusMessage = `Error stopping recording: ${error}`;
       isRecording = false;
+      
+      // Update tray menu text even on error
+      await updateTrayMenuState(false);
     } finally {
       isLoading = false;
     }
