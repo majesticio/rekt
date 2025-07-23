@@ -159,7 +159,7 @@ These settings affect the quality and file size of the recording.
 - Node.js (v14+)
 - Rust (1.60+)
 - Tauri CLI
-
+- (Arch) `sudo pacman -S gstreamer gst-plugins-good gst-plugins-base gst-libav`
 ### Setup
 
 ```bash
